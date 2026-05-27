@@ -23,6 +23,8 @@ const baseConfig: DinnerConfig = {
   requireVerify: true,
   requireHandoffTests: true,
   graphiteTrunk: "main",
+  blockerPolicy: "strict" as const,
+  commitWip: true,
 };
 
 function issue(

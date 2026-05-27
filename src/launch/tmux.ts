@@ -34,14 +34,19 @@ export function buildLaunchShellCommand(
 ): string {
   const apiEnv = cursorApiKeyEnvName();
   if (!apiKey.trim()) {
-    return [
-      `echo "Missing ${apiEnv}" >&2`,
-      "exit 1",
-    ].join("; ");
+    return [`echo "Missing ${apiEnv}" >&2`, "exit 1"].join("; ");
   }
+  const shell = process.env.SHELL?.trim() || "/bin/zsh";
   return [
     `export ${apiEnv}=${shellQuote(apiKey.trim())}`,
     innerCommand,
+    "ec=$?",
+    'echo ""',
+    'echo "══════════════════════════════════════════════════════════"',
+    'echo "serve finished (exit $ec) — shell stays open (Ctrl-d to close)"',
+    'echo "  issue-dinner status"',
+    'echo "══════════════════════════════════════════════════════════"',
+    `exec ${shellQuote(shell)} -l`,
   ].join("; ");
 }
 

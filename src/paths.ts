@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { StateStore } from "./state/store.js";
+import { StateStore, type BlockerPolicy } from "./state/store.js";
 
 /** XDG-style state dir; works when the CLI is installed globally (any cwd). */
 export function defaultStateDir(): string {
@@ -15,18 +15,24 @@ export function resolveStateDir(explicit?: string): string {
   return defaultStateDir();
 }
 
-export function stateStore(stateDir?: string): StateStore {
+export function stateStore(
+  stateDir?: string,
+  blockerPolicy?: BlockerPolicy,
+): StateStore {
   const dir = resolveStateDir(stateDir);
   mkdirSync(dir, { recursive: true });
-  return new StateStore(dir);
+  return new StateStore(dir, blockerPolicy);
 }
 
 export function stateDirForEpic(epic: string): string {
   return join(resolveStateDir(), epic.toUpperCase());
 }
 
-export function stateStoreForEpic(epic: string): StateStore {
-  return stateStore(stateDirForEpic(epic));
+export function stateStoreForEpic(
+  epic: string,
+  blockerPolicy: BlockerPolicy = "strict",
+): StateStore {
+  return stateStore(stateDirForEpic(epic), blockerPolicy);
 }
 
 export function resolveCliExecutable(): string {

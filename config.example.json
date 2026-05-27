@@ -6,6 +6,8 @@
   "stackAuthor": "alavoie",
   "stackBaseOverride": "alavoie/cpd-635-user-event-log",
   "graphiteTrunk": "main",
+  "blockerPolicy": "strict",
+  "commitWip": true,
   "workspaces": {
     "backend": "/Users/alavoie/code/fileservice2",
     "frontend": "/Users/alavoie/code/istari-frontend",
@@ -30,7 +32,8 @@
         "args": [
           "run",
           "pytest",
-          "tests/v3/unit_test/events/",
+          "tests/v3/unit_test/test_user_event_service.py",
+          "tests/v3/integration/test_event_routes.py",
           "-q",
           "--tb=short"
         ]
@@ -52,7 +55,8 @@
         "args": [
           "run",
           "pytest",
-          "tests/v3/unit_test/events/",
+          "tests/v3/unit_test/test_user_event_service.py",
+          "tests/v3/integration/test_event_routes.py",
           "-q",
           "--tb=short"
         ],

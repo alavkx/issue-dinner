@@ -7,6 +7,7 @@ import {
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
+import { commitCourseWip, gitCurrentBranch } from "../git/workspace.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type { StateStore } from "../state/store.js";
 import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
@@ -25,12 +26,13 @@ export interface ProcessOptions {
   stream?: boolean;
   resumeAgentId?: string;
   skipVerify?: boolean;
+  skipCommit?: boolean;
   stack?: StackConfig;
 }
 
 export interface ProcessResult {
   issueKey: string;
-  status: "verified" | "error" | "cancelled" | "dry-run";
+  status: "verified" | "agent_complete" | "error" | "cancelled" | "dry-run";
   agentId?: string;
   runId?: string;
   result?: string;
@@ -45,6 +47,16 @@ function stateWorkspaceFields(roots: IssueWorkspaces): {
     workspace: roots.keys.join(","),
     cwd: roots.cwds.join(" | "),
   };
+}
+
+async function recordBranches(
+  roots: IssueWorkspaces,
+): Promise<Record<string, string>> {
+  const branches: Record<string, string> = {};
+  for (let i = 0; i < roots.keys.length; i++) {
+    branches[roots.keys[i]!] = await gitCurrentBranch(roots.cwds[i]!);
+  }
+  return branches;
 }
 
 function writeAssistantText(event: {
@@ -116,13 +128,22 @@ export async function verifyIssue(
     store.upsert({
       issueKey: issue.key,
       summary: issue.summary,
-      status: "error",
+      status: rec?.handoffStatus ? "agent_complete" : "error",
       ...ws,
-      error: verify.error,
+      verifyError: verify.error,
+      error: rec?.handoffStatus ? undefined : verify.error,
       verifyOutput: verify.output.slice(0, 2000),
       finishedAt: new Date().toISOString(),
+      branches: rec?.branches,
+      commits: rec?.commits,
+      handoffStatus: rec?.handoffStatus,
+      handoffVerification: rec?.handoffVerification,
     });
-    return { issueKey: issue.key, status: "error", error: verify.error };
+    return {
+      issueKey: issue.key,
+      status: rec?.handoffStatus ? "agent_complete" : "error",
+      error: verify.error,
+    };
   }
 
   store.upsert({
@@ -137,6 +158,8 @@ export async function verifyIssue(
     verifyOutput: verify.output.slice(0, 2000),
     finishedAt: new Date().toISOString(),
     resultPreview: rec?.resultPreview,
+    branches: rec?.branches,
+    commits: rec?.commits,
   });
 
   console.log(`\n✓ ${issue.key} verified\n`);
@@ -157,7 +180,7 @@ export async function processIssue(
     issue.summary,
   );
   const ws = stateWorkspaceFields(roots);
-  const prompt = buildAgentPrompt({ issue, roots });
+  const prompt = buildAgentPrompt({ issue, roots, config });
 
   if (options.stack && !options.dryRun) {
     const stackActions = await checkoutIssueStack(
@@ -172,6 +195,8 @@ export async function processIssue(
     }
   }
 
+  const branches = options.dryRun ? {} : await recordBranches(roots);
+
   if (options.dryRun) {
     console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
     console.log(prompt.slice(0, 1200));
@@ -184,14 +209,18 @@ export async function processIssue(
     summary: issue.summary,
     status: "running",
     ...ws,
+    branches,
     startedAt: new Date().toISOString(),
   });
 
   console.log(`\n🍽  Serving ${issue.key}: ${issue.summary}`);
-  console.log(`   ${formatWorkspacesLabel(roots)}\n`);
+  console.log(`   ${formatWorkspacesLabel(roots)}`);
+  const local = localAgentOptions(config, roots.cwds);
+  console.log(
+    `   local agent cwd=${JSON.stringify(local.cwd)} (not cloud)\n`,
+  );
 
   try {
-    const local = localAgentOptions(config, roots.cwds);
     const agent = options.resumeAgentId
       ? await Agent.resume(options.resumeAgentId, {
           apiKey,
@@ -223,6 +252,7 @@ export async function processIssue(
           summary: issue.summary,
           status: "error",
           ...ws,
+          branches,
           agentId: agent.agentId,
           runId: result.id,
           finishedAt: new Date().toISOString(),
@@ -244,6 +274,7 @@ export async function processIssue(
           summary: issue.summary,
           status: "cancelled",
           ...ws,
+          branches,
           agentId: agent.agentId,
           runId: result.id,
           finishedAt: new Date().toISOString(),
@@ -266,6 +297,7 @@ export async function processIssue(
           summary: issue.summary,
           status: "error",
           ...ws,
+          branches,
           agentId: agent.agentId,
           runId: result.id,
           handoffStatus: handoff.status,
@@ -294,11 +326,36 @@ export async function processIssue(
         );
       }
 
+      let commits: Record<string, string> = {};
+      const shouldCommit = config.commitWip && !options.skipCommit;
+      if (shouldCommit) {
+        console.log(`\n📦 Committing WIP on story branches…`);
+        const commitResults = await commitCourseWip(
+          issue.key,
+          issue.summary,
+          roots.keys.map((key, i) => ({ key, cwd: roots.cwds[i]! })),
+        );
+        for (const cr of commitResults) {
+          if (cr.committed) {
+            commits[cr.workspaceKey] = cr.sha ?? "";
+            console.log(
+              `   ${cr.workspaceKey}: ${cr.branch} @ ${cr.sha} — ${cr.message}`,
+            );
+          } else if (cr.error) {
+            console.warn(`   ${cr.workspaceKey}: commit failed — ${cr.error}`);
+          } else {
+            console.log(`   ${cr.workspaceKey}: ${cr.branch} (clean)`);
+          }
+        }
+      }
+
       store.upsert({
         issueKey: issue.key,
         summary: issue.summary,
         status: "agent_complete",
         ...ws,
+        branches,
+        commits,
         agentId: agent.agentId,
         runId: result.id,
         handoffStatus: handoff.status,
@@ -312,6 +369,20 @@ export async function processIssue(
 
       if (options.skipVerify) {
         console.warn("   ⚠ --skip-verify: not running verify commands");
+        store.upsert({
+          issueKey: issue.key,
+          summary: issue.summary,
+          status: "verified",
+          ...ws,
+          branches,
+          commits,
+          agentId: agent.agentId,
+          runId: result.id,
+          handoffStatus: handoff.status,
+          handoffVerification: handoff.verification,
+          finishedAt: new Date().toISOString(),
+          resultPreview: text.slice(0, 500),
+        });
         return {
           issueKey: issue.key,
           status: "verified",
@@ -326,23 +397,27 @@ export async function processIssue(
         store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
-          status: "error",
+          status: "agent_complete",
           ...ws,
+          branches,
+          commits,
           agentId: agent.agentId,
           runId: result.id,
           handoffStatus: handoff.status,
           handoffVerification: handoff.verification,
           verifyOutput: verify.output.slice(0, 2000),
+          verifyError: verify.error,
           finishedAt: new Date().toISOString(),
-          error: verify.error,
           resultPreview: text.slice(0, 500),
         });
+        console.error(`\n✗ ${issue.key} verify failed: ${verify.error}\n`);
         return {
           issueKey: issue.key,
-          status: "error",
+          status: "agent_complete",
           agentId: agent.agentId,
           runId: result.id,
           error: verify.error,
+          result: text,
         };
       }
 
@@ -351,6 +426,8 @@ export async function processIssue(
         summary: issue.summary,
         status: "verified",
         ...ws,
+        branches,
+        commits,
         agentId: agent.agentId,
         runId: result.id,
         handoffStatus: handoff.status,
@@ -384,6 +461,7 @@ export async function processIssue(
       summary: issue.summary,
       status: "error",
       ...ws,
+      branches,
       finishedAt: new Date().toISOString(),
       error: message,
     });

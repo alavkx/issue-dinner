@@ -1,9 +1,13 @@
+import type { DinnerConfig } from "../config.js";
 import type { IssueWorkspaces } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
+import { formatVerifyCommandsForPrompt } from "../verify/format.js";
+import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
 
 export interface PromptContext {
   issue: JiraIssue;
   roots: IssueWorkspaces;
+  config: DinnerConfig;
 }
 
 function formatWorkspaceSection(roots: IssueWorkspaces): string {
@@ -12,16 +16,23 @@ function formatWorkspaceSection(roots: IssueWorkspaces): string {
 - **cwd:** ${roots.cwds[0]}`;
   }
   const lines = roots.keys.map((key, i) => `- **${key}:** ${roots.cwds[i]}`);
-  return `- **Multi-root workspace** (Cursor SDK local \`cwd\` array — you may read and write in all roots):
+  return `- **Multi-root workspace** (Cursor SDK **local** agent — \`cwd\` array; not cloud):
 ${lines.join("\n")}
 - **Primary key:** ${roots.primaryKey}`;
 }
 
 export function buildAgentPrompt(ctx: PromptContext): string {
-  const { issue, roots } = ctx;
+  const { issue, roots, config } = ctx;
   const ac = issue.parsed.acceptanceCriteria
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n");
+
+  const verifyCommands = resolveVerifyCommandsForIssue(
+    config,
+    issue.key,
+    roots.keys,
+  );
+  const verifySection = formatVerifyCommandsForPrompt(verifyCommands);
 
   return `You are implementing one Jira **vertical slice** across a multi-root local workspace when configured.
 
@@ -35,6 +46,12 @@ ${formatWorkspaceSection(roots)}
 
 ## Description
 ${issue.description}
+
+## Verify gate (issue-dinner runs these exactly after your handoff)
+
+Place tests and code so these commands pass:
+
+${verifySection}
 
 ## How to work (TDD — vertical slices only)
 
@@ -53,8 +70,8 @@ When multiple roots are listed, implement the slice **in repo order** (e.g. Open
 ## Quality
 - Follow ADRs and CONTEXT docs; do not re-debate settled design.
 - No placeholder TODOs or \`not implemented\` throws in production paths.
-- Run the tests you add plus relevant existing suites in **each** root you touch before finishing.
-- Do **not** git commit or push unless explicitly asked.
+- Run the verify commands above plus relevant existing suites in **each** root you touch before finishing.
+- Do **not** git commit or push — issue-dinner commits WIP on the story branch after your run.
 
 ## Final message (required handoff)
 

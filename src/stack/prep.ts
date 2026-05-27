@@ -32,6 +32,11 @@ async function ensureStackBase(
       await port.checkoutBranch(cwd, stack.base);
     }
     await port.trackBranch(cwd, stack.base, stack.graphiteTrunk);
+    if (stack.base !== `${stack.prefix}-trunk`) {
+      console.warn(
+        `   ${cwd}: stack base "${stack.base}" tracked on ${stack.graphiteTrunk} (stackBaseOverride)`,
+      );
+    }
     return;
   }
 

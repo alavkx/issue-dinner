@@ -24,4 +24,10 @@ describe("buildLaunchShellCommand", () => {
     assert.match(cmd, /Missing ISSUE_DINNER_CURSOR_API_KEY/);
     assert.doesNotMatch(cmd, /issue-dinner serve/);
   });
+
+  it("keeps shell open after serve", () => {
+    const cmd = buildLaunchShellCommand("issue-dinner serve", "cursor_test");
+    assert.match(cmd, /exec .* -l/);
+    assert.match(cmd, /serve finished/);
+  });
 });

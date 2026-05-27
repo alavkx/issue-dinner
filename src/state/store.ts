@@ -22,10 +22,15 @@ export interface IssueRunRecord {
   startedAt?: string;
   finishedAt?: string;
   error?: string;
+  verifyError?: string;
   resultPreview?: string;
   handoffStatus?: string;
   handoffVerification?: string;
   verifyOutput?: string;
+  /** workspace key → branch name after checkout */
+  branches?: Record<string, string>;
+  /** workspace key → short commit sha after WIP commit */
+  commits?: Record<string, string>;
 }
 
 export interface DinnerState {
@@ -36,14 +41,22 @@ export interface DinnerState {
 
 const DEFAULT_STATE: DinnerState = { version: 1, issues: {} };
 
+export type BlockerPolicy = "strict" | "agent_complete";
+
 export class StateStore {
   private readonly path: string;
   private data: DinnerState;
+  private blockerPolicy: BlockerPolicy;
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, blockerPolicy: BlockerPolicy = "strict") {
     mkdirSync(stateDir, { recursive: true });
     this.path = join(stateDir, "runs.json");
     this.data = this.load();
+    this.blockerPolicy = blockerPolicy;
+  }
+
+  setBlockerPolicy(policy: BlockerPolicy): void {
+    this.blockerPolicy = policy;
   }
 
   private load(): DinnerState {
@@ -79,7 +92,11 @@ export class StateStore {
 
   isDone(key: string): boolean {
     const s = this.data.issues[key]?.status;
-    return s === "verified" || s === "finished" || s === "skipped";
+    if (s === "verified" || s === "finished" || s === "skipped") return true;
+    if (this.blockerPolicy === "agent_complete" && s === "agent_complete") {
+      return true;
+    }
+    return false;
   }
 
   isVerified(key: string): boolean {
@@ -100,5 +117,23 @@ export class StateStore {
       }
     }
     return { ok: true };
+  }
+
+  /** Reset courses stuck in running (interrupted serve). */
+  recoverStaleRunning(): string[] {
+    const recovered: string[] = [];
+    for (const [key, rec] of Object.entries(this.data.issues)) {
+      if (rec.status === "running") {
+        this.data.issues[key] = {
+          ...rec,
+          status: "error",
+          error: "Recovered stale running state (previous serve interrupted)",
+          finishedAt: new Date().toISOString(),
+        };
+        recovered.push(key);
+      }
+    }
+    if (recovered.length > 0) this.save();
+    return recovered;
   }
 }

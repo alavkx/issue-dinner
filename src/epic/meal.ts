@@ -1,6 +1,6 @@
 import { loadMachineConfig, type MachineConfig } from "../config.js";
 import { stateStoreForEpic } from "../paths.js";
-import type { StateStore } from "../state/store.js";
+import type { BlockerPolicy, StateStore } from "../state/store.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import { resolveStackForEpic } from "./stack.js";
 
@@ -18,7 +18,7 @@ export interface MealOptions {
 
 export function createMeal(epic: string, options: MealOptions = {}): EpicMeal {
   const machine = loadMachineConfig(options.configPath);
-  const store = stateStoreForEpic(epic);
+  const store = stateStoreForEpic(epic, machine.blockerPolicy as BlockerPolicy);
   store.setEpic(epic);
 
   return {

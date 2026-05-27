@@ -31,6 +31,10 @@ const MachineConfigSchema = z.object({
   /** Override epic trunk branch if you already use a non-default name. */
   stackBaseOverride: z.string().optional(),
   graphiteTrunk: z.string().default("main"),
+  /** When agent_complete counts as done for Jira blocker gating. */
+  blockerPolicy: z.enum(["strict", "agent_complete"]).default("strict"),
+  /** Commit WIP in each workspace after successful agent phase. */
+  commitWip: z.boolean().default(true),
 });
 
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;

@@ -11,6 +11,8 @@ const base: DinnerConfig = {
   requireVerify: true,
   requireHandoffTests: true,
   graphiteTrunk: "main",
+  blockerPolicy: "strict" as const,
+  commitWip: true,
 };
 
 describe("resolveVerifyCommands", () => {
