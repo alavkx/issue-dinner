@@ -10,7 +10,7 @@ const base: DinnerConfig = {
   settingSources: ["project"],
   requireVerify: true,
   requireHandoffTests: true,
-  exclude: [],
+  graphiteTrunk: "main",
 };
 
 describe("resolveVerifyCommands", () => {

@@ -13,8 +13,8 @@ const VerifyCommandSchema = z.object({
 
 const SettingSourceSchema = z.enum(["project", "user", "team"]);
 
-const ConfigSchema = z.object({
-  epic: z.string().optional(),
+/** Install-level settings (workspaces, verify, author). Not per-epic. */
+const MachineConfigSchema = z.object({
   model: z.string().default("composer-2.5"),
   workspaces: z.record(z.string()),
   defaultWorkspace: z.string(),
@@ -24,16 +24,23 @@ const ConfigSchema = z.object({
   settingSources: z.array(SettingSourceSchema).default(["project"]),
   requireVerify: z.boolean().default(true),
   requireHandoffTests: z.boolean().default(true),
-  exclude: z.array(z.string()).default(["CPD-640"]),
   verifyCommands: z.record(z.array(VerifyCommandSchema)).optional(),
   issueVerifyCommands: z.record(z.array(VerifyCommandSchema)).optional(),
+  /** Git branch namespace, e.g. alavoie → alavoie/cpd-635/cpd-636 */
+  stackAuthor: z.string().optional(),
+  /** Override epic trunk branch if you already use a non-default name. */
+  stackBaseOverride: z.string().optional(),
+  graphiteTrunk: z.string().default("main"),
 });
 
-export type DinnerConfig = z.infer<typeof ConfigSchema>;
+export type MachineConfig = z.infer<typeof MachineConfigSchema>;
+
+/** @deprecated Use MachineConfig */
+export type DinnerConfig = MachineConfig;
 
 const CONFIG_NAMES = [
-  "issue-dinner.config.json",
   join(homedir(), ".config", "issue-dinner", "config.json"),
+  "issue-dinner.config.json",
 ];
 
 export function findConfigPath(explicit?: string): string | undefined {
@@ -46,16 +53,19 @@ export function findConfigPath(explicit?: string): string | undefined {
   return undefined;
 }
 
-export function loadConfig(explicit?: string): DinnerConfig {
+export function loadMachineConfig(explicit?: string): MachineConfig {
   const path = findConfigPath(explicit);
   if (!path) {
     throw new Error(
-      "No config found. Copy config.example.json to issue-dinner.config.json and edit workspaces.",
+      "No install config found. Create ~/.config/issue-dinner/config.json (see config.example.json).",
     );
   }
   const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return ConfigSchema.parse(raw);
+  return MachineConfigSchema.parse(raw);
 }
+
+/** @deprecated Use loadMachineConfig */
+export const loadConfig = loadMachineConfig;
 
 export {
   formatWorkspacesLabel,

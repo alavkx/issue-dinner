@@ -1,10 +1,11 @@
 {
-  "epic": "CPD-635",
   "model": "composer-2.5",
   "settingSources": ["project"],
   "requireVerify": true,
   "requireHandoffTests": true,
-  "exclude": ["CPD-640"],
+  "stackAuthor": "alavoie",
+  "stackBaseOverride": "alavoie/cpd-635-user-event-log",
+  "graphiteTrunk": "main",
   "workspaces": {
     "backend": "/Users/alavoie/code/fileservice2",
     "frontend": "/Users/alavoie/code/istari-frontend",
@@ -55,7 +56,13 @@
       {
         "name": "events-unit",
         "command": "poetry",
-        "args": ["run", "pytest", "tests/v3/unit_test/events/", "-q", "--tb=short"],
+        "args": [
+          "run",
+          "pytest",
+          "tests/v3/unit_test/events/",
+          "-q",
+          "--tb=short"
+        ],
         "workspace": "backend"
       },
       {

@@ -1,5 +1,6 @@
 import { Agent, CursorAgentError } from "@cursor/sdk";
 import type { DinnerConfig } from "../config.js";
+import type { StackConfig } from "../stack/stack-config.js";
 import {
   formatWorkspacesLabel,
   localAgentOptions,
@@ -16,12 +17,15 @@ import {
   verificationIsStrongEnough,
 } from "./handoff.js";
 import { buildAgentPrompt } from "./prompt.js";
+import { checkoutIssueStack } from "../stack/prep.js";
+import { createGraphiteStackPort } from "../stack/graphite-runner.js";
 
 export interface ProcessOptions {
   dryRun?: boolean;
   stream?: boolean;
   resumeAgentId?: string;
   skipVerify?: boolean;
+  stack?: StackConfig;
 }
 
 export interface ProcessResult {
@@ -69,11 +73,7 @@ export async function runVerifyPhase(
     return { ok: true, output: "(verify disabled in config)" };
   }
 
-  const commands = resolveVerifyCommandsForIssue(
-    config,
-    issue.key,
-    roots.keys,
-  );
+  const commands = resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
   if (commands.length === 0) {
     return {
       ok: false,
@@ -159,10 +159,21 @@ export async function processIssue(
   const ws = stateWorkspaceFields(roots);
   const prompt = buildAgentPrompt({ issue, roots });
 
-  if (options.dryRun) {
-    console.log(
-      `[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`,
+  if (options.stack && !options.dryRun) {
+    const stackActions = await checkoutIssueStack(
+      issue,
+      config,
+      options.stack,
+      createGraphiteStackPort(),
     );
+    for (const row of stackActions) {
+      if (row.action === "noop") continue;
+      console.log(`   stack ${row.workspace}: ${row.action} → ${row.branch}`);
+    }
+  }
+
+  if (options.dryRun) {
+    console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
     console.log(prompt.slice(0, 1200));
     console.log("\n… (truncated)\n");
     return { issueKey: issue.key, status: "dry-run" };

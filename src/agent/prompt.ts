@@ -11,9 +11,7 @@ function formatWorkspaceSection(roots: IssueWorkspaces): string {
     return `- **Workspace:** ${roots.keys[0]}
 - **cwd:** ${roots.cwds[0]}`;
   }
-  const lines = roots.keys.map(
-    (key, i) => `- **${key}:** ${roots.cwds[i]}`,
-  );
+  const lines = roots.keys.map((key, i) => `- **${key}:** ${roots.cwds[i]}`);
   return `- **Multi-root workspace** (Cursor SDK local \`cwd\` array — you may read and write in all roots):
 ${lines.join("\n")}
 - **Primary key:** ${roots.primaryKey}`;
