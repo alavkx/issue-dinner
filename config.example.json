@@ -1,6 +1,10 @@
 {
   "epic": "CPD-635",
   "model": "composer-2.5",
+  "settingSources": ["project"],
+  "requireVerify": true,
+  "requireHandoffTests": true,
+  "exclude": ["CPD-640"],
   "workspaces": {
     "backend": "/Users/alavoie/code/fileservice2",
     "frontend": "/Users/alavoie/code/istari-frontend",
@@ -13,7 +17,45 @@
     "CPD-637": "backend",
     "CPD-638": "backend",
     "CPD-639": "frontend",
-    "CPD-640": "schemas",
     "CPD-641": "frontend"
+  },
+  "verifyCommands": {
+    "backend": [
+      {
+        "name": "events-unit",
+        "command": "poetry",
+        "args": ["run", "pytest", "tests/v3/unit_test/events/", "-q", "--tb=short"]
+      }
+    ],
+    "frontend": [
+      {
+        "name": "events-prototype-unit",
+        "command": "npm",
+        "args": ["run", "test", "--", "--run", "src/events/prototype"]
+      }
+    ],
+    "schemas": [
+      {
+        "name": "openapi-validate",
+        "command": "echo",
+        "args": ["configure openapi validate command for api-schemas"]
+      }
+    ]
+  },
+  "issueVerifyCommands": {
+    "CPD-638": [
+      {
+        "name": "notifications-regression",
+        "command": "poetry",
+        "args": [
+          "run",
+          "pytest",
+          "tests/v3/integration/test_notification_routes.py",
+          "tests/v3/integration/test_user_event_routes.py",
+          "-q",
+          "--tb=short"
+        ]
+      }
+    ]
   }
 }

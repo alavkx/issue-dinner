@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { Command } from "commander";
-import { processIssue, sortByDependencies } from "./agent/runner.js";
+import { processIssue, sortByDependencies, verifyIssue } from "./agent/runner.js";
 import { loadConfig } from "./config.js";
 import { ensureAcli, fetchIssue, listEpicChildren } from "./jira/acli.js";
+import { filterMenuIssues, parseKeyList } from "./serve/filter.js";
 import { StateStore } from "./state/store.js";
 import { commandExists } from "./util/exec.js";
 
@@ -32,17 +33,25 @@ function stateStore(): StateStore {
   return new StateStore(resolve(process.cwd(), ".state"));
 }
 
+function defaultExclude(config: ReturnType<typeof loadConfig>): Set<string> {
+  return new Set(config.exclude ?? []);
+}
+
 program
   .command("list")
   .description("List child stories under an epic")
   .argument("[epic]", "Epic key (default from config)")
-  .action(async (epicArg: string | undefined, _opts: unknown, cmd: Command) => {
+  .option("--exclude <keys>", "Comma-separated keys to hide (merged with config.exclude)")
+  .action(async (epicArg: string | undefined, opts: { exclude?: string }, cmd: Command) => {
     await ensureAcli();
     const config = loadConfig(globalConfig(cmd));
     const epic = epicArg ?? config.epic;
     if (!epic) throw new Error("Epic key required (arg or config.epic)");
 
-    const issues = await listEpicChildren(epic);
+    const exclude = defaultExclude(config);
+    for (const k of parseKeyList(opts.exclude) ?? []) exclude.add(k);
+
+    const issues = filterMenuIssues(await listEpicChildren(epic), { exclude });
     const store = stateStore();
     store.setEpic(epic);
 
@@ -54,7 +63,9 @@ program
         issue.parsed.blockedBy.length > 0
           ? ` ← ${issue.parsed.blockedBy.join(", ")}`
           : "";
-      console.log(`${issue.key}  ${issue.status}${run}  ${issue.summary}${blockers}`);
+      console.log(
+        `${issue.key}  ${issue.status}${run}  ${issue.summary}${blockers}`,
+      );
     }
   });
 
@@ -83,13 +94,20 @@ program
 
     if (epic) {
       await ensureAcli();
-      const issues = await listEpicChildren(epic);
+      const exclude = defaultExclude(config);
+      const issues = filterMenuIssues(await listEpicChildren(epic), {
+        exclude,
+      });
       for (const issue of issues) {
         const rec = store.get(issue.key);
         const st = rec?.status ?? "pending";
-        console.log(`${issue.key}  ${st.padEnd(10)}  ${issue.summary}`);
-        if (rec?.agentId) console.log(`         agent=${rec.agentId} run=${rec.runId ?? "?"}`);
-        if (rec?.error) console.log(`         error: ${rec.error.slice(0, 120)}`);
+        console.log(`${issue.key}  ${st.padEnd(14)}  ${issue.summary}`);
+        if (rec?.handoffVerification)
+          console.log(`         handoff=${rec.handoffVerification}`);
+        if (rec?.agentId)
+          console.log(`         agent=${rec.agentId} run=${rec.runId ?? "?"}`);
+        if (rec?.error)
+          console.log(`         error: ${rec.error.slice(0, 120)}`);
       }
       return;
     }
@@ -101,12 +119,13 @@ program
 
 program
   .command("cook")
-  .description("Run a Cursor agent for one issue")
+  .description("Run a Cursor agent for one issue, then verify")
   .argument("<key>", "Issue key e.g. CPD-636")
   .option("--dry-run", "Print prompt without calling the SDK")
   .option("--no-stream", "Wait without streaming assistant text")
   .option("--resume <agentId>", "Resume a previous agent")
   .option("--force", "Run even if blockers are not finished locally")
+  .option("--skip-verify", "Skip configured verify commands (not recommended)")
   .action(
     async (
       key: string,
@@ -115,12 +134,15 @@ program
         noStream?: boolean;
         resume?: string;
         force?: boolean;
+        skipVerify?: boolean;
       },
       cmd: Command,
     ) => {
       await ensureAcli();
       if (!opts.dryRun && !commandExists("cursor")) {
-        console.warn("Warning: `cursor` CLI not found on PATH; local SDK may still work.");
+        console.warn(
+          "Warning: `cursor` CLI not found on PATH; local SDK may still work.",
+        );
       }
 
       const config = loadConfig(globalConfig(cmd));
@@ -138,6 +160,7 @@ program
         dryRun: opts.dryRun,
         stream: !opts.noStream,
         resumeAgentId: opts.resume,
+        skipVerify: opts.skipVerify,
       });
 
       if (result.status === "error") {
@@ -147,13 +170,29 @@ program
   );
 
 program
+  .command("verify")
+  .description("Re-run verify commands for an issue (after agent_complete)")
+  .argument("<key>", "Issue key")
+  .action(async (key: string, _opts: unknown, cmd: Command) => {
+    const config = loadConfig(globalConfig(cmd));
+    const store = stateStore();
+    await ensureAcli();
+    const issue = await fetchIssue(key);
+    const result = await verifyIssue(issue, config, store);
+    if (result.status === "error") process.exitCode = 2;
+  });
+
+program
   .command("serve")
   .description("Process epic children in dependency order")
   .argument("[epic]", "Epic key (default from config)")
   .option("--dry-run", "Print plan only")
-  .option("--skip-done", "Skip issues marked finished in .state")
+  .option("--skip-done", "Skip issues already verified")
   .option("--only <keys>", "Comma-separated issue keys to include")
+  .option("--exclude <keys>", "Comma-separated keys to skip (merged with config)")
   .option("--force", "Ignore blocker state")
+  .option("--continue-on-error", "Keep serving after a failed course")
+  .option("--skip-verify", "Skip verify commands after each agent")
   .action(
     async (
       epicArg: string | undefined,
@@ -161,7 +200,10 @@ program
         dryRun?: boolean;
         skipDone?: boolean;
         only?: string;
+        exclude?: string;
         force?: boolean;
+        continueOnError?: boolean;
+        skipVerify?: boolean;
       },
       cmd: Command,
     ) => {
@@ -173,17 +215,22 @@ program
       const store = stateStore();
       store.setEpic(epic);
 
-      let issues = sortByDependencies(await listEpicChildren(epic));
-      if (opts.only) {
-        const allow = new Set(opts.only.split(",").map((k) => k.trim()));
-        issues = issues.filter((i) => allow.has(i.key));
-      }
+      const exclude = defaultExclude(config);
+      for (const k of parseKeyList(opts.exclude) ?? []) exclude.add(k);
+
+      let issues = sortByDependencies(
+        filterMenuIssues(await listEpicChildren(epic), {
+          exclude,
+          only: parseKeyList(opts.only),
+        }),
+      );
 
       console.log(`Menu for epic ${epic} (${issues.length} courses)\n`);
+      let failures = 0;
+
       for (const issue of issues) {
-        const rec = store.get(issue.key);
-        if (opts.skipDone && rec?.status === "finished") {
-          console.log(`skip ${issue.key} (done)`);
+        if (opts.skipDone && store.isVerified(issue.key)) {
+          console.log(`skip ${issue.key} (verified)`);
           continue;
         }
         if (!opts.force && !opts.dryRun) {
@@ -199,12 +246,22 @@ program
           continue;
         }
 
-        const result = await processIssue(issue, config, store, apiKey());
+        const result = await processIssue(issue, config, store, apiKey(), {
+          skipVerify: opts.skipVerify,
+        });
         if (result.status === "error") {
-          console.error(`Stopped: ${issue.key} failed`);
-          process.exitCode = 2;
-          break;
+          failures += 1;
+          console.error(`✗ ${issue.key} failed`);
+          if (!opts.continueOnError) {
+            process.exitCode = 2;
+            break;
+          }
         }
+      }
+
+      if (failures > 0 && opts.continueOnError) {
+        console.error(`\n${failures} course(s) failed — see: npm run dev -- status`);
+        process.exitCode = 2;
       }
     },
   );

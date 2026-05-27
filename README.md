@@ -1,14 +1,15 @@
 # issue-dinner
 
-Serve Jira vertical-slice stories through the [Cursor TypeScript SDK](https://cursor.com/docs/sdk/typescript). Fetches issue bodies via `acli`, builds an implementation prompt, and runs a **local** agent against the configured workspace.
+Serve Jira vertical-slice stories through the [Cursor TypeScript SDK](https://cursor.com/docs/sdk/typescript). Fetches issue bodies via `acli`, runs a **local** agent with **TDD + structured handoff** prompts, then runs **verify commands** before marking a course `verified`.
 
-Built for the **Platform user event log + Jobs Activity** epic ([CPD-635](https://istari.atlassian.net/browse/CPD-635)) but works for any parent/child Jira setup.
+Built for [CPD-635](https://istari.atlassian.net/browse/CPD-635) (Platform user event log + Jobs Activity).
 
 ## Prerequisites
 
 - Node 20+
-- [`acli`](https://developer.atlassian.com/cloud/acli/) authenticated: `acli jira auth login --web`
-- `CURSOR_API_KEY` from [Cursor Dashboard → Integrations](https://cursor.com/dashboard/integrations)
+- [`acli`](https://developer.atlassian.com/cloud/acli/) — `acli jira auth login --web`
+- `CURSOR_API_KEY` — [Dashboard → Integrations](https://cursor.com/dashboard/integrations)
+- `poetry` / `npm` in PATH for verify commands (per repo)
 
 ## Setup
 
@@ -16,54 +17,85 @@ Built for the **Platform user event log + Jobs Activity** epic ([CPD-635](https:
 cd ~/code/issue-dinner
 npm install
 cp config.example.json issue-dinner.config.json
-# Edit workspace paths in issue-dinner.config.json
+# Edit workspace paths and verifyCommands
 export CURSOR_API_KEY="cursor_..."
 ```
+
+## Overnight run (recommended)
+
+```bash
+tmux new -s dinner
+cd ~/code/issue-dinner
+export CURSOR_API_KEY="..."
+
+npm run dev -- serve --continue-on-error --skip-done
+# Excludes CPD-640 by default (HITL). Ctrl-b d to detach.
+```
+
+Morning: `npm run dev -- status` then review `git status` in each repo.
 
 ## Commands
 
 | Command | Description |
-|---------|-------------|
-| `npm run dev -- list` | List epic children + local run status |
-| `npm run dev -- show CPD-636` | Print issue description + parsed sections |
-| `npm run dev -- status` | Processing state from `.state/runs.json` |
-| `npm run dev -- cook CPD-636` | Run agent for one issue |
-| `npm run dev -- cook CPD-636 --dry-run` | Print prompt only |
-| `npm run dev -- serve` | Process epic in dependency order |
-| `npm run dev -- serve --skip-done` | Resume menu, skip finished courses |
+| ------- | ----------- |
+| `list [epic]` | Epic children + local status |
+| `show <key>` | Issue body + parsed sections |
+| `status` | `.state/runs.json` (use `--epic CPD-635`) |
+| `cook <key>` | Agent → handoff check → verify |
+| `verify <key>` | Re-run verify only |
+| `serve [epic]` | Full menu in dependency order |
 
-After `npm run build`, use `npm start -- <command>` or `npx issue-dinner <command>`.
+### Serve flags
 
-## Config
+| Flag | Purpose |
+| ---- | ------- |
+| `--continue-on-error` | Keep going after a failed course |
+| `--skip-done` | Skip issues already `verified` |
+| `--exclude KEYS` | Extra keys to skip (config has `CPD-640`) |
+| `--only KEYS` | Subset of the menu |
+| `--force` | Ignore blocker state |
 
-`issue-dinner.config.json` (gitignored) or `~/.config/issue-dinner/config.json`:
+## Done criteria
 
-- `epic` — default epic key (`CPD-635`)
-- `workspaces` — named repo roots (`backend`, `frontend`, `sdk`, `schemas`)
-- `issueWorkspace` — optional per-key override
-- `model` — Cursor model id (default `composer-2.5`)
+A course is **verified** (counts for blockers) only when:
 
-Workspace selection uses `issueWorkspace` first, then heuristics on the description (frontend vs backend vs OpenAPI).
+1. Cursor run completes with handoff `Status: success` or `partial`
+2. Configured **verify commands** exit 0 for that issue/workspace
 
-## State
+`agent_complete` without verify does **not** unblock dependents.
 
-`.state/runs.json` tracks per-issue status (`pending` / `running` / `finished` / `error`), agent/run ids, and blocker gating for `serve`. Blockers are parsed from the **Blocked by** section (e.g. `CPD-636`).
+## Config highlights
 
-## Epic menu (CPD-635)
+| Field | Default | Meaning |
+| ----- | ------- | ------- |
+| `settingSources` | `["project"]` | Load repo `AGENTS.md` / rules |
+| `requireVerify` | `true` | Run `verifyCommands` after agent |
+| `exclude` | `["CPD-640"]` | HITL slice skipped in `serve` |
+| `verifyCommands` | per workspace | Hard gate (pytest, vitest, …) |
+| `issueVerifyCommands` | optional | Override per Jira key |
 
-| Key | Summary |
-|-----|---------|
-| CPD-636 | Replayable `GET /events` + wire contract |
-| CPD-637 | Job status → user event log |
-| CPD-638 | Notifications delivery coexistence |
-| CPD-639 | Client event poll + `applyEntityPatch` |
-| CPD-640 | OpenAPI `EventData` union (HITL) |
-| CPD-641 | Jobs Activity end-to-end |
+## Agent prompt
 
-Suggested order: `serve` (respects blockers) or `cook` per key.
+Each `cook` uses:
 
-## Notes
+- **Vertical-slice TDD** (one test → one implementation, public interfaces)
+- **Orchestrate-style handoff** (`Status`, `Verification`, `Measurements`, …)
 
-- Agents run **locally** with `settingSources: []` (no ambient Cursor rules unless you change that).
-- Does **not** commit or push; prompts tell the agent the same.
-- Slice **CPD-640** is HITL — review before `cook`.
+Inspired by Cursor's `/orchestrate` worker + verifier split; issue-dinner implements the verifier as shell commands, not a second agent (v1).
+
+## Tests
+
+```bash
+npm test
+```
+
+## Epic menu
+
+| Key | Workspace | Notes |
+| --- | --------- | ----- |
+| CPD-636 | backend | OpenAPI/SDK may need follow-up or extra cooks |
+| CPD-637 | backend | |
+| CPD-638 | backend | Custom verify in example config |
+| CPD-639 | frontend | Blocked by 636 |
+| CPD-640 | — | **Excluded** (HITL) |
+| CPD-641 | frontend | Blocked by 637, 639 |

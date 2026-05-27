@@ -4,6 +4,8 @@ import { join } from "node:path";
 export type IssueRunStatus =
   | "pending"
   | "running"
+  | "agent_complete"
+  | "verified"
   | "finished"
   | "error"
   | "cancelled"
@@ -21,6 +23,9 @@ export interface IssueRunRecord {
   finishedAt?: string;
   error?: string;
   resultPreview?: string;
+  handoffStatus?: string;
+  handoffVerification?: string;
+  verifyOutput?: string;
 }
 
 export interface DinnerState {
@@ -74,10 +79,18 @@ export class StateStore {
 
   isDone(key: string): boolean {
     const s = this.data.issues[key]?.status;
-    return s === "finished" || s === "skipped";
+    return s === "verified" || s === "finished" || s === "skipped";
   }
 
-  canProcess(issueKey: string, blockedBy: string[]): { ok: boolean; reason?: string } {
+  isVerified(key: string): boolean {
+    const s = this.data.issues[key]?.status;
+    return s === "verified" || s === "finished";
+  }
+
+  canProcess(
+    issueKey: string,
+    blockedBy: string[],
+  ): { ok: boolean; reason?: string } {
     for (const blocker of blockedBy) {
       if (!this.isDone(blocker)) {
         return {
