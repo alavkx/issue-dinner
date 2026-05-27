@@ -31,6 +31,7 @@ async function ensureStackBase(
       }
       await port.checkoutBranch(cwd, stack.base);
     }
+    await port.trackBranch(cwd, stack.base, stack.graphiteTrunk);
     return;
   }
 

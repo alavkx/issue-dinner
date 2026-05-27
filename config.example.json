@@ -36,13 +36,6 @@
         ]
       }
     ],
-    "frontend": [
-      {
-        "name": "events-prototype-unit",
-        "command": "npm",
-        "args": ["run", "test", "--", "--run", "src/events/prototype"]
-      }
-    ],
     "schemas": [
       {
         "name": "openapi-validate",
@@ -64,12 +57,6 @@
           "--tb=short"
         ],
         "workspace": "backend"
-      },
-      {
-        "name": "events-prototype-unit",
-        "command": "npm",
-        "args": ["run", "test", "--", "--run", "src/events/prototype"],
-        "workspace": "frontend"
       }
     ],
     "CPD-638": [
@@ -80,7 +67,6 @@
           "run",
           "pytest",
           "tests/v3/integration/test_notification_routes.py",
-          "tests/v3/integration/test_user_event_routes.py",
           "-q",
           "--tb=short"
         ]

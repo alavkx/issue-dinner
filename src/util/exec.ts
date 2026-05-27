@@ -33,6 +33,12 @@ export async function runCommand(
   }
 }
 
+/** Safe single-quoted shell argument (falls back when special chars present). */
+export function shellQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
 export function commandExists(command: string): boolean {
   try {
     execFileSync("which", [command], { stdio: "ignore" });

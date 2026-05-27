@@ -8,6 +8,7 @@ function mockPort(overrides: Partial<GraphiteStackPort>): GraphiteStackPort {
     currentBranch: async () => "main",
     isWorkingTreeClean: async () => true,
     checkoutBranch: async () => {},
+    trackBranch: async () => {},
     createStackedBranch: async () => {},
     ...overrides,
   };

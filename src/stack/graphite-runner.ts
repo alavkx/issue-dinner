@@ -43,6 +43,13 @@ export function createGraphiteStackPort(): GraphiteStackPort {
       }
     },
 
+    async trackBranch(cwd, branch, parent) {
+      if ((await port.currentBranch(cwd)) !== branch) {
+        await port.checkoutBranch(cwd, branch);
+      }
+      await gt(cwd, "track", "--parent", parent);
+    },
+
     async createStackedBranch(cwd, branch, parent) {
       if (!(await port.branchExists(cwd, parent))) {
         throw new Error(

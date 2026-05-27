@@ -47,6 +47,9 @@ function recordingPort(): GraphiteStackPort & {
     checkoutBranch: async (cwd, branch) => {
       calls.push({ op: "checkout", cwd, detail: branch });
     },
+    trackBranch: async (cwd, branch, parent) => {
+      calls.push({ op: "track", cwd, detail: `${branch}<-${parent}` });
+    },
     createStackedBranch: async (cwd, branch, parent) => {
       calls.push({ op: "create", cwd, detail: `${branch}<-${parent}` });
     },
@@ -64,6 +67,18 @@ describe("prepEpicStack", () => {
     assert.equal(summary.length, 2);
     assert.equal(summary[0]?.action, "create");
     assert.match(summary[1]?.branch ?? "", /cpd-637/);
+  });
+
+  it("tracks an existing stack base before creating story branches", async () => {
+    const port = recordingPort();
+    await prepEpicStack([issue("CPD-636")], config, stack, port);
+
+    const track = port.calls.find((c) => c.op === "track");
+    assert.ok(track);
+    assert.equal(
+      track?.detail,
+      "alavoie/cpd-635-user-event-log<-main",
+    );
   });
 });
 

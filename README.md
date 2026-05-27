@@ -36,8 +36,8 @@ State is per epic: `~/.local/state/issue-dinner/CPD-635/runs.json`.
 ## Eat an epic
 
 ```bash
-issue-dinner CPD-635              # same as launch (overnight tmux serve)
-issue-dinner CPD-635 launch
+issue-dinner CPD-635              # same as launch (prep + tmux serve, attached)
+issue-dinner CPD-635 launch       # use --detach to background the tmux session
 issue-dinner CPD-635 list
 issue-dinner CPD-635 prep
 issue-dinner CPD-635 serve

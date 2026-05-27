@@ -229,19 +229,25 @@ export async function runMealArgv(
         dryRun,
       });
 
+      const apiKey =
+        process.env.ISSUE_DINNER_CURSOR_API_KEY?.trim() ??
+        (dryRun ? "" : cursorApiKey());
+
       if (dryRun) {
         const session = flagValue(args, "--session") ?? "dinner";
-        console.log(`# tmux session: ${session}`);
-        console.log(buildLaunchShellCommand(inner));
+        const detach = hasFlag(args, "--detach");
+        console.log(
+          `# tmux session: ${session}${detach ? " (detached)" : " (attached)"}`,
+        );
+        console.log(buildLaunchShellCommand(inner, apiKey));
         return;
       }
 
-      cursorApiKey();
       launchInTmux({
         session: flagValue(args, "--session") ?? "dinner",
         innerCommand: inner,
-        attach: hasFlag(args, "--attach"),
-        detach: !hasFlag(args, "--no-detach"),
+        apiKey: cursorApiKey(),
+        detach: hasFlag(args, "--detach"),
       });
       return;
     }

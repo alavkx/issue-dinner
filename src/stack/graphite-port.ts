@@ -6,6 +6,8 @@ export interface GraphiteStackPort {
   currentBranch(cwd: string): Promise<string>;
   isWorkingTreeClean(cwd: string): Promise<boolean>;
   checkoutBranch(cwd: string, branch: string): Promise<void>;
+  /** Register branch with Graphite (no-op if already tracked). */
+  trackBranch(cwd: string, branch: string, parent: string): Promise<void>;
   createStackedBranch(
     cwd: string,
     branch: string,
