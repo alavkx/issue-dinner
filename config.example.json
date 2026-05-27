@@ -13,18 +13,26 @@
   },
   "defaultWorkspace": "backend",
   "issueWorkspace": {
-    "CPD-636": "backend",
     "CPD-637": "backend",
     "CPD-638": "backend",
     "CPD-639": "frontend",
     "CPD-641": "frontend"
+  },
+  "issueWorkspaces": {
+    "CPD-636": ["backend", "schemas", "sdk", "frontend"]
   },
   "verifyCommands": {
     "backend": [
       {
         "name": "events-unit",
         "command": "poetry",
-        "args": ["run", "pytest", "tests/v3/unit_test/events/", "-q", "--tb=short"]
+        "args": [
+          "run",
+          "pytest",
+          "tests/v3/unit_test/events/",
+          "-q",
+          "--tb=short"
+        ]
       }
     ],
     "frontend": [
@@ -43,6 +51,20 @@
     ]
   },
   "issueVerifyCommands": {
+    "CPD-636": [
+      {
+        "name": "events-unit",
+        "command": "poetry",
+        "args": ["run", "pytest", "tests/v3/unit_test/events/", "-q", "--tb=short"],
+        "workspace": "backend"
+      },
+      {
+        "name": "events-prototype-unit",
+        "command": "npm",
+        "args": ["run", "test", "--", "--run", "src/events/prototype"],
+        "workspace": "frontend"
+      }
+    ],
     "CPD-638": [
       {
         "name": "notifications-regression",

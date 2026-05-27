@@ -36,24 +36,24 @@ Morning: `npm run dev -- status` then review `git status` in each repo.
 
 ## Commands
 
-| Command | Description |
-| ------- | ----------- |
-| `list [epic]` | Epic children + local status |
-| `show <key>` | Issue body + parsed sections |
-| `status` | `.state/runs.json` (use `--epic CPD-635`) |
-| `cook <key>` | Agent → handoff check → verify |
-| `verify <key>` | Re-run verify only |
-| `serve [epic]` | Full menu in dependency order |
+| Command        | Description                               |
+| -------------- | ----------------------------------------- |
+| `list [epic]`  | Epic children + local status              |
+| `show <key>`   | Issue body + parsed sections              |
+| `status`       | `.state/runs.json` (use `--epic CPD-635`) |
+| `cook <key>`   | Agent → handoff check → verify            |
+| `verify <key>` | Re-run verify only                        |
+| `serve [epic]` | Full menu in dependency order             |
 
 ### Serve flags
 
-| Flag | Purpose |
-| ---- | ------- |
-| `--continue-on-error` | Keep going after a failed course |
-| `--skip-done` | Skip issues already `verified` |
-| `--exclude KEYS` | Extra keys to skip (config has `CPD-640`) |
-| `--only KEYS` | Subset of the menu |
-| `--force` | Ignore blocker state |
+| Flag                  | Purpose                                   |
+| --------------------- | ----------------------------------------- |
+| `--continue-on-error` | Keep going after a failed course          |
+| `--skip-done`         | Skip issues already `verified`            |
+| `--exclude KEYS`      | Extra keys to skip (config has `CPD-640`) |
+| `--only KEYS`         | Subset of the menu                        |
+| `--force`             | Ignore blocker state                      |
 
 ## Done criteria
 
@@ -66,13 +66,26 @@ A course is **verified** (counts for blockers) only when:
 
 ## Config highlights
 
-| Field | Default | Meaning |
-| ----- | ------- | ------- |
-| `settingSources` | `["project"]` | Load repo `AGENTS.md` / rules |
-| `requireVerify` | `true` | Run `verifyCommands` after agent |
-| `exclude` | `["CPD-640"]` | HITL slice skipped in `serve` |
-| `verifyCommands` | per workspace | Hard gate (pytest, vitest, …) |
-| `issueVerifyCommands` | optional | Override per Jira key |
+| Field                 | Default       | Meaning                          |
+| --------------------- | ------------- | -------------------------------- |
+| `settingSources`      | `["project"]` | Load repo `AGENTS.md` / rules    |
+| `requireVerify`       | `true`        | Run `verifyCommands` after agent |
+| `exclude`             | `["CPD-640"]` | HITL slice skipped in `serve`    |
+| `verifyCommands`      | per workspace | Hard gate (pytest, vitest, …)    |
+| `issueVerifyCommands` | optional      | Override per Jira key            |
+| `issueWorkspaces`     | optional      | Multi-root SDK `cwd` per issue   |
+
+### Multi-root workspaces
+
+Cursor SDK accepts `local.cwd` as `string | string[]`. For slices that touch several repos (e.g. CPD-636):
+
+```json
+"issueWorkspaces": {
+  "CPD-636": ["backend", "schemas", "sdk", "frontend"]
+}
+```
+
+One agent run can edit all roots. Verify runs `verifyCommands` for each root (or use `issueVerifyCommands` with a `workspace` field per command). Single-root issues still use `issueWorkspace` or heuristics.
 
 ## Agent prompt
 
@@ -91,11 +104,11 @@ npm test
 
 ## Epic menu
 
-| Key | Workspace | Notes |
-| --- | --------- | ----- |
-| CPD-636 | backend | OpenAPI/SDK may need follow-up or extra cooks |
-| CPD-637 | backend | |
-| CPD-638 | backend | Custom verify in example config |
-| CPD-639 | frontend | Blocked by 636 |
-| CPD-640 | — | **Excluded** (HITL) |
-| CPD-641 | frontend | Blocked by 637, 639 |
+| Key     | Workspace | Notes                                         |
+| ------- | --------- | --------------------------------------------- |
+| CPD-636 | backend   | OpenAPI/SDK may need follow-up or extra cooks |
+| CPD-637 | backend   |                                               |
+| CPD-638 | backend   | Custom verify in example config               |
+| CPD-639 | frontend  | Blocked by 636                                |
+| CPD-640 | —         | **Excluded** (HITL)                           |
+| CPD-641 | frontend  | Blocked by 637, 639                           |

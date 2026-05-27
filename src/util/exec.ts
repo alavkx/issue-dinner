@@ -25,7 +25,8 @@ export async function runCommand(
       stdout?: string;
       stderr?: string;
     };
-    error.code = typeof e.code === "string" ? 1 : (e.code as number | undefined);
+    error.code =
+      typeof e.code === "string" ? 1 : (e.code as number | undefined);
     if (e.stdout != null) error.stdout = String(e.stdout);
     if (e.stderr != null) error.stderr = String(e.stderr);
     throw error;

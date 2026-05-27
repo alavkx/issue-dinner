@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { Command } from "commander";
-import { processIssue, sortByDependencies, verifyIssue } from "./agent/runner.js";
+import {
+  processIssue,
+  sortByDependencies,
+  verifyIssue,
+} from "./agent/runner.js";
 import { loadConfig } from "./config.js";
 import { ensureAcli, fetchIssue, listEpicChildren } from "./jira/acli.js";
 import { filterMenuIssues, parseKeyList } from "./serve/filter.js";
@@ -41,33 +45,44 @@ program
   .command("list")
   .description("List child stories under an epic")
   .argument("[epic]", "Epic key (default from config)")
-  .option("--exclude <keys>", "Comma-separated keys to hide (merged with config.exclude)")
-  .action(async (epicArg: string | undefined, opts: { exclude?: string }, cmd: Command) => {
-    await ensureAcli();
-    const config = loadConfig(globalConfig(cmd));
-    const epic = epicArg ?? config.epic;
-    if (!epic) throw new Error("Epic key required (arg or config.epic)");
+  .option(
+    "--exclude <keys>",
+    "Comma-separated keys to hide (merged with config.exclude)",
+  )
+  .action(
+    async (
+      epicArg: string | undefined,
+      opts: { exclude?: string },
+      cmd: Command,
+    ) => {
+      await ensureAcli();
+      const config = loadConfig(globalConfig(cmd));
+      const epic = epicArg ?? config.epic;
+      if (!epic) throw new Error("Epic key required (arg or config.epic)");
 
-    const exclude = defaultExclude(config);
-    for (const k of parseKeyList(opts.exclude) ?? []) exclude.add(k);
+      const exclude = defaultExclude(config);
+      for (const k of parseKeyList(opts.exclude) ?? []) exclude.add(k);
 
-    const issues = filterMenuIssues(await listEpicChildren(epic), { exclude });
-    const store = stateStore();
-    store.setEpic(epic);
+      const issues = filterMenuIssues(await listEpicChildren(epic), {
+        exclude,
+      });
+      const store = stateStore();
+      store.setEpic(epic);
 
-    console.log(`Epic ${epic} — ${issues.length} stories\n`);
-    for (const issue of issues) {
-      const rec = store.get(issue.key);
-      const run = rec?.status ? ` [${rec.status}]` : "";
-      const blockers =
-        issue.parsed.blockedBy.length > 0
-          ? ` ← ${issue.parsed.blockedBy.join(", ")}`
-          : "";
-      console.log(
-        `${issue.key}  ${issue.status}${run}  ${issue.summary}${blockers}`,
-      );
-    }
-  });
+      console.log(`Epic ${epic} — ${issues.length} stories\n`);
+      for (const issue of issues) {
+        const rec = store.get(issue.key);
+        const run = rec?.status ? ` [${rec.status}]` : "";
+        const blockers =
+          issue.parsed.blockedBy.length > 0
+            ? ` ← ${issue.parsed.blockedBy.join(", ")}`
+            : "";
+        console.log(
+          `${issue.key}  ${issue.status}${run}  ${issue.summary}${blockers}`,
+        );
+      }
+    },
+  );
 
 program
   .command("show")
@@ -189,7 +204,10 @@ program
   .option("--dry-run", "Print plan only")
   .option("--skip-done", "Skip issues already verified")
   .option("--only <keys>", "Comma-separated issue keys to include")
-  .option("--exclude <keys>", "Comma-separated keys to skip (merged with config)")
+  .option(
+    "--exclude <keys>",
+    "Comma-separated keys to skip (merged with config)",
+  )
   .option("--force", "Ignore blocker state")
   .option("--continue-on-error", "Keep serving after a failed course")
   .option("--skip-verify", "Skip verify commands after each agent")
@@ -260,7 +278,9 @@ program
       }
 
       if (failures > 0 && opts.continueOnError) {
-        console.error(`\n${failures} course(s) failed — see: npm run dev -- status`);
+        console.error(
+          `\n${failures} course(s) failed — see: npm run dev -- status`,
+        );
         process.exitCode = 2;
       }
     },

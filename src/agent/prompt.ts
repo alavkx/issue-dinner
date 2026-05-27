@@ -1,24 +1,31 @@
+import type { IssueWorkspaces } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
 
 export interface PromptContext {
   issue: JiraIssue;
-  cwd: string;
-  workspaceKey: string;
-  relatedPaths?: string[];
+  roots: IssueWorkspaces;
+}
+
+function formatWorkspaceSection(roots: IssueWorkspaces): string {
+  if (roots.keys.length === 1) {
+    return `- **Workspace:** ${roots.keys[0]}
+- **cwd:** ${roots.cwds[0]}`;
+  }
+  const lines = roots.keys.map(
+    (key, i) => `- **${key}:** ${roots.cwds[i]}`,
+  );
+  return `- **Multi-root workspace** (Cursor SDK local \`cwd\` array — you may read and write in all roots):
+${lines.join("\n")}
+- **Primary key:** ${roots.primaryKey}`;
 }
 
 export function buildAgentPrompt(ctx: PromptContext): string {
-  const { issue, cwd, workspaceKey, relatedPaths = [] } = ctx;
+  const { issue, roots } = ctx;
   const ac = issue.parsed.acceptanceCriteria
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n");
 
-  const related =
-    relatedPaths.length > 0
-      ? `\nRelated repos (read-only context; switch cwd or note follow-ups if the slice requires changes there):\n${relatedPaths.map((p) => `- ${p}`).join("\n")}`
-      : "";
-
-  return `You are implementing one Jira **vertical slice** in a local workspace.
+  return `You are implementing one Jira **vertical slice** across a multi-root local workspace when configured.
 
 ## Issue
 - **Key:** ${issue.key}
@@ -26,9 +33,7 @@ export function buildAgentPrompt(ctx: PromptContext): string {
 - **Status:** ${issue.status}
 
 ## Workspace
-- **Primary cwd:** ${cwd}
-- **Workspace key:** ${workspaceKey}
-${related}
+${formatWorkspaceSection(roots)}
 
 ## Description
 ${issue.description}
@@ -45,12 +50,12 @@ Do **not** write all tests then all code (horizontal slices). Use **tracer bulle
 
 Tests must describe **observable behavior**, survive refactors, and use the project's domain language (see CONTEXT.md / ADRs in the issue).
 
-If the slice spans multiple repos (OpenAPI, SDK, backend, frontend), complete each repo in TDD order; list any repo you could not modify in **Suggested follow-ups**.
+When multiple roots are listed, implement the slice **in repo order** (e.g. OpenAPI → SDK regen → backend → frontend tests). Do not defer cross-repo work to follow-ups unless blocked by environment.
 
 ## Quality
 - Follow ADRs and CONTEXT docs; do not re-debate settled design.
 - No placeholder TODOs or \`not implemented\` throws in production paths.
-- Run the tests you add plus relevant existing suites before finishing.
+- Run the tests you add plus relevant existing suites in **each** root you touch before finishing.
 - Do **not** git commit or push unless explicitly asked.
 
 ## Final message (required handoff)
@@ -71,10 +76,10 @@ Pick the strongest claim supported by what you **ran** (not diff-reading alone).
 One line per quantitative AC, or \`(none)\` if none apply.
 
 ## What I did
-- <summary per area/file>
+- <summary per repo/root>
 
 ## Suggested follow-ups
-- <other repos or tasks>
+- <only if truly blocked>
 
 ## Acceptance criteria (checklist)
 ${ac || "(use Description section)"}

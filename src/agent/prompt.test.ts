@@ -15,8 +15,11 @@ describe("buildAgentPrompt", () => {
           blockedBy: [],
         },
       },
-      cwd: "/tmp/fileservice2",
-      workspaceKey: "backend",
+      roots: {
+        primaryKey: "backend",
+        keys: ["backend"],
+        cwds: ["/tmp/fileservice2"],
+      },
     });
 
     assert.match(prompt, /Tracer bullet/i);
@@ -24,5 +27,27 @@ describe("buildAgentPrompt", () => {
     assert.match(prompt, /## Status/);
     assert.match(prompt, /## Verification/);
     assert.match(prompt, /public interface/i);
+  });
+
+  it("lists every multi-root cwd for the agent", () => {
+    const prompt = buildAgentPrompt({
+      issue: {
+        key: "CPD-636",
+        summary: "Replayable GET /events",
+        status: "Open",
+        description: "",
+        parsed: { acceptanceCriteria: [], blockedBy: [] },
+      },
+      roots: {
+        primaryKey: "backend",
+        keys: ["backend", "schemas", "sdk"],
+        cwds: ["/tmp/be", "/tmp/schemas", "/tmp/sdk"],
+      },
+    });
+
+    assert.match(prompt, /Multi-root workspace/i);
+    assert.match(prompt, /\/tmp\/be/);
+    assert.match(prompt, /\/tmp\/schemas/);
+    assert.match(prompt, /\/tmp\/sdk/);
   });
 });

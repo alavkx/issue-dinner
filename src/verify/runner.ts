@@ -1,9 +1,11 @@
 import { runCommand } from "../util/exec.js";
+import type { ResolvedVerifyCommand } from "./resolve.js";
 
 export interface VerifyCommand {
   name: string;
   command: string;
   args: string[];
+  workspace?: string;
 }
 
 export interface VerifyRunResult {
@@ -13,16 +15,17 @@ export interface VerifyRunResult {
 }
 
 export async function runVerifyCommands(
-  commands: VerifyCommand[],
-  cwd: string,
+  commands: ResolvedVerifyCommand[],
 ): Promise<VerifyRunResult> {
   const lines: string[] = [];
   const failures: VerifyRunResult["failures"] = [];
 
   for (const cmd of commands) {
-    lines.push(`$ ${cmd.command} ${cmd.args.join(" ")}`);
+    lines.push(`[${cmd.cwd}] $ ${cmd.command} ${cmd.args.join(" ")}`);
     try {
-      const { stdout, stderr } = await runCommand(cmd.command, cmd.args, { cwd });
+      const { stdout, stderr } = await runCommand(cmd.command, cmd.args, {
+        cwd: cmd.cwd,
+      });
       if (stdout) lines.push(stdout);
       if (stderr) lines.push(stderr);
     } catch (err: unknown) {

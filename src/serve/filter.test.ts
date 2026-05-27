@@ -25,10 +25,12 @@ describe("filterMenuIssues", () => {
   });
 
   it("applies only allow-list when provided", () => {
-    const menu = filterMenuIssues(
-      [issue("CPD-636"), issue("CPD-637")],
-      { only: new Set(["CPD-637"]) },
+    const menu = filterMenuIssues([issue("CPD-636"), issue("CPD-637")], {
+      only: new Set(["CPD-637"]),
+    });
+    assert.deepEqual(
+      menu.map((i) => i.key),
+      ["CPD-637"],
     );
-    assert.deepEqual(menu.map((i) => i.key), ["CPD-637"]);
   });
 });

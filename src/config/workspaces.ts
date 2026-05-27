@@ -1,0 +1,97 @@
+import { resolve } from "node:path";
+import type { DinnerConfig } from "../config.js";
+
+export interface IssueWorkspaces {
+  primaryKey: string;
+  keys: string[];
+  cwds: string[];
+}
+
+export function resolveWorkspaceKey(
+  config: DinnerConfig,
+  issueKey: string,
+  description: string,
+  summary: string,
+): string {
+  if (config.issueWorkspace?.[issueKey]) {
+    return config.issueWorkspace[issueKey];
+  }
+  const text = `${summary}\n${description}`.toLowerCase();
+  if (
+    "frontend" in config.workspaces &&
+    (text.includes("istari-frontend") ||
+      text.includes("src/events") ||
+      text.includes("activitypanel") ||
+      text.includes("tanstack"))
+  ) {
+    return "frontend";
+  }
+  if (
+    "schemas" in config.workspaces &&
+    (text.includes("istari-ts-client") ||
+      text.includes("openapi") ||
+      text.includes("api-schemas"))
+  ) {
+    return "schemas";
+  }
+  return config.defaultWorkspace;
+}
+
+export function resolveCwd(config: DinnerConfig, workspaceKey: string): string {
+  const cwd = config.workspaces[workspaceKey];
+  if (!cwd) {
+    throw new Error(
+      `Unknown workspace "${workspaceKey}". Known: ${Object.keys(config.workspaces).join(", ")}`,
+    );
+  }
+  return resolve(cwd);
+}
+
+export function resolveIssueWorkspaces(
+  config: DinnerConfig,
+  issueKey: string,
+  description: string,
+  summary: string,
+): IssueWorkspaces {
+  let keys: string[];
+  const configured = config.issueWorkspaces?.[issueKey];
+  if (configured && configured.length > 0) {
+    keys = configured;
+  } else {
+    keys = [resolveWorkspaceKey(config, issueKey, description, summary)];
+  }
+
+  keys = [...new Set(keys)];
+  for (const key of keys) {
+    if (!(key in config.workspaces)) {
+      throw new Error(
+        `Unknown workspace "${key}" for ${issueKey}. Known: ${Object.keys(config.workspaces).join(", ")}`,
+      );
+    }
+  }
+
+  const cwds = keys.map((k) => resolveCwd(config, k));
+  return { primaryKey: keys[0]!, keys, cwds };
+}
+
+export function sdkCwd(cwds: string[]): string | string[] {
+  if (cwds.length === 1) return cwds[0]!;
+  return cwds;
+}
+
+export function localAgentOptions(
+  config: DinnerConfig,
+  cwds: string[],
+): { cwd: string | string[]; settingSources: DinnerConfig["settingSources"] } {
+  return {
+    cwd: sdkCwd(cwds),
+    settingSources: config.settingSources,
+  };
+}
+
+export function formatWorkspacesLabel(roots: IssueWorkspaces): string {
+  if (roots.keys.length === 1) {
+    return `${roots.keys[0]} (${roots.cwds[0]})`;
+  }
+  return roots.keys.map((key, i) => `${key}=${roots.cwds[i]}`).join(", ");
+}

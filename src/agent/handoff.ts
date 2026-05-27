@@ -33,9 +33,7 @@ function normalizeStatus(value: string | undefined): HandoffStatus {
   return "unknown";
 }
 
-function normalizeVerification(
-  value: string | undefined,
-): HandoffVerification {
+function normalizeVerification(value: string | undefined): HandoffVerification {
   if (!value?.trim()) return "not-verified";
   const v = value.trim().toLowerCase();
   const allowed: HandoffVerification[] = [
@@ -59,7 +57,9 @@ export function parseHandoff(text: string): ParsedHandoff {
   return { status, verification, measurements, raw: text };
 }
 
-export function agentPhaseSucceeded(handoff: Pick<ParsedHandoff, "status">): boolean {
+export function agentPhaseSucceeded(
+  handoff: Pick<ParsedHandoff, "status">,
+): boolean {
   return handoff.status === "success" || handoff.status === "partial";
 }
 

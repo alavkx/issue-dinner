@@ -7,6 +7,8 @@ const VerifyCommandSchema = z.object({
   name: z.string(),
   command: z.string(),
   args: z.array(z.string()),
+  /** Workspace key for cwd when running this command (multi-root verify). */
+  workspace: z.string().optional(),
 });
 
 const SettingSourceSchema = z.enum(["project", "user", "team"]);
@@ -17,6 +19,8 @@ const ConfigSchema = z.object({
   workspaces: z.record(z.string()),
   defaultWorkspace: z.string(),
   issueWorkspace: z.record(z.string()).optional(),
+  /** Multiple workspace keys → SDK `local.cwd: string[]` for one agent. */
+  issueWorkspaces: z.record(z.array(z.string())).optional(),
   settingSources: z.array(SettingSourceSchema).default(["project"]),
   requireVerify: z.boolean().default(true),
   requireHandoffTests: z.boolean().default(true),
@@ -53,52 +57,12 @@ export function loadConfig(explicit?: string): DinnerConfig {
   return ConfigSchema.parse(raw);
 }
 
-export function resolveWorkspaceKey(
-  config: DinnerConfig,
-  issueKey: string,
-  description: string,
-  summary: string,
-): string {
-  if (config.issueWorkspace?.[issueKey]) {
-    return config.issueWorkspace[issueKey];
-  }
-  const text = `${summary}\n${description}`.toLowerCase();
-  if (
-    "frontend" in config.workspaces &&
-    (text.includes("istari-frontend") ||
-      text.includes("src/events") ||
-      text.includes("activitypanel") ||
-      text.includes("tanstack"))
-  ) {
-    return "frontend";
-  }
-  if (
-    "schemas" in config.workspaces &&
-    (text.includes("istari-ts-client") ||
-      text.includes("openapi") ||
-      text.includes("api-schemas"))
-  ) {
-    return "schemas";
-  }
-  return config.defaultWorkspace;
-}
-
-export function resolveCwd(config: DinnerConfig, workspaceKey: string): string {
-  const cwd = config.workspaces[workspaceKey];
-  if (!cwd) {
-    throw new Error(
-      `Unknown workspace "${workspaceKey}". Known: ${Object.keys(config.workspaces).join(", ")}`,
-    );
-  }
-  return resolve(cwd);
-}
-
-export function localAgentOptions(
-  config: DinnerConfig,
-  cwd: string,
-): { cwd: string; settingSources: DinnerConfig["settingSources"] } {
-  return {
-    cwd,
-    settingSources: config.settingSources,
-  };
-}
+export {
+  formatWorkspacesLabel,
+  localAgentOptions,
+  resolveCwd,
+  resolveIssueWorkspaces,
+  resolveWorkspaceKey,
+  sdkCwd,
+} from "./config/workspaces.js";
+export type { IssueWorkspaces } from "./config/workspaces.js";

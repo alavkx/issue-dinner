@@ -1,9 +1,14 @@
 import { Agent, CursorAgentError } from "@cursor/sdk";
 import type { DinnerConfig } from "../config.js";
-import { localAgentOptions, resolveCwd, resolveWorkspaceKey } from "../config.js";
+import {
+  formatWorkspacesLabel,
+  localAgentOptions,
+  resolveIssueWorkspaces,
+  type IssueWorkspaces,
+} from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type { StateStore } from "../state/store.js";
-import { resolveVerifyCommands } from "../verify/resolve.js";
+import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
 import { runVerifyCommands } from "../verify/runner.js";
 import {
   agentPhaseSucceeded,
@@ -28,13 +33,14 @@ export interface ProcessResult {
   error?: string;
 }
 
-function relatedWorkspacePaths(
-  config: DinnerConfig,
-  primaryKey: string,
-): string[] {
-  return Object.entries(config.workspaces)
-    .filter(([k]) => k !== primaryKey)
-    .map(([, p]) => p);
+function stateWorkspaceFields(roots: IssueWorkspaces): {
+  workspace: string;
+  cwd: string;
+} {
+  return {
+    workspace: roots.keys.join(","),
+    cwd: roots.cwds.join(" | "),
+  };
 }
 
 function writeAssistantText(event: {
@@ -57,24 +63,29 @@ function writeAssistantText(event: {
 export async function runVerifyPhase(
   issue: JiraIssue,
   config: DinnerConfig,
-  workspaceKey: string,
-  cwd: string,
+  roots: IssueWorkspaces,
 ): Promise<{ ok: boolean; error?: string; output: string }> {
   if (!config.requireVerify) {
     return { ok: true, output: "(verify disabled in config)" };
   }
 
-  const commands = resolveVerifyCommands(config, issue.key, workspaceKey);
+  const commands = resolveVerifyCommandsForIssue(
+    config,
+    issue.key,
+    roots.keys,
+  );
   if (commands.length === 0) {
     return {
       ok: false,
       output: "",
-      error: `No verifyCommands for ${issue.key} / workspace ${workspaceKey}`,
+      error: `No verifyCommands for ${issue.key} (roots: ${roots.keys.join(", ")})`,
     };
   }
 
-  console.log(`\n🔎 Verifying ${issue.key} (${commands.length} command(s))…\n`);
-  const result = await runVerifyCommands(commands, cwd);
+  console.log(
+    `\n🔎 Verifying ${issue.key} (${commands.length} command(s) across ${roots.keys.length} root(s))…\n`,
+  );
+  const result = await runVerifyCommands(commands);
   if (!result.ok) {
     const detail = result.failures.map((f) => f.name).join(", ");
     return {
@@ -91,23 +102,22 @@ export async function verifyIssue(
   config: DinnerConfig,
   store: StateStore,
 ): Promise<ProcessResult> {
-  const workspaceKey = resolveWorkspaceKey(
+  const roots = resolveIssueWorkspaces(
     config,
     issue.key,
     issue.description,
     issue.summary,
   );
-  const cwd = resolveCwd(config, workspaceKey);
+  const ws = stateWorkspaceFields(roots);
   const rec = store.get(issue.key);
 
-  const verify = await runVerifyPhase(issue, config, workspaceKey, cwd);
+  const verify = await runVerifyPhase(issue, config, roots);
   if (!verify.ok) {
     store.upsert({
       issueKey: issue.key,
       summary: issue.summary,
       status: "error",
-      workspace: workspaceKey,
-      cwd,
+      ...ws,
       error: verify.error,
       verifyOutput: verify.output.slice(0, 2000),
       finishedAt: new Date().toISOString(),
@@ -119,8 +129,7 @@ export async function verifyIssue(
     issueKey: issue.key,
     summary: issue.summary,
     status: "verified",
-    workspace: workspaceKey,
-    cwd,
+    ...ws,
     agentId: rec?.agentId,
     runId: rec?.runId,
     handoffStatus: rec?.handoffStatus,
@@ -141,22 +150,19 @@ export async function processIssue(
   apiKey: string,
   options: ProcessOptions = {},
 ): Promise<ProcessResult> {
-  const workspaceKey = resolveWorkspaceKey(
+  const roots = resolveIssueWorkspaces(
     config,
     issue.key,
     issue.description,
     issue.summary,
   );
-  const cwd = resolveCwd(config, workspaceKey);
-  const prompt = buildAgentPrompt({
-    issue,
-    cwd,
-    workspaceKey,
-    relatedPaths: relatedWorkspacePaths(config, workspaceKey),
-  });
+  const ws = stateWorkspaceFields(roots);
+  const prompt = buildAgentPrompt({ issue, roots });
 
   if (options.dryRun) {
-    console.log(`[dry-run] ${issue.key} → ${workspaceKey} (${cwd})\n`);
+    console.log(
+      `[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`,
+    );
     console.log(prompt.slice(0, 1200));
     console.log("\n… (truncated)\n");
     return { issueKey: issue.key, status: "dry-run" };
@@ -166,16 +172,15 @@ export async function processIssue(
     issueKey: issue.key,
     summary: issue.summary,
     status: "running",
-    workspace: workspaceKey,
-    cwd,
+    ...ws,
     startedAt: new Date().toISOString(),
   });
 
   console.log(`\n🍽  Serving ${issue.key}: ${issue.summary}`);
-  console.log(`   workspace=${workspaceKey} cwd=${cwd}\n`);
+  console.log(`   ${formatWorkspacesLabel(roots)}\n`);
 
   try {
-    const local = localAgentOptions(config, cwd);
+    const local = localAgentOptions(config, roots.cwds);
     const agent = options.resumeAgentId
       ? await Agent.resume(options.resumeAgentId, {
           apiKey,
@@ -206,8 +211,7 @@ export async function processIssue(
           issueKey: issue.key,
           summary: issue.summary,
           status: "error",
-          workspace: workspaceKey,
-          cwd,
+          ...ws,
           agentId: agent.agentId,
           runId: result.id,
           finishedAt: new Date().toISOString(),
@@ -228,8 +232,7 @@ export async function processIssue(
           issueKey: issue.key,
           summary: issue.summary,
           status: "cancelled",
-          workspace: workspaceKey,
-          cwd,
+          ...ws,
           agentId: agent.agentId,
           runId: result.id,
           finishedAt: new Date().toISOString(),
@@ -251,8 +254,7 @@ export async function processIssue(
           issueKey: issue.key,
           summary: issue.summary,
           status: "error",
-          workspace: workspaceKey,
-          cwd,
+          ...ws,
           agentId: agent.agentId,
           runId: result.id,
           handoffStatus: handoff.status,
@@ -285,8 +287,7 @@ export async function processIssue(
         issueKey: issue.key,
         summary: issue.summary,
         status: "agent_complete",
-        workspace: workspaceKey,
-        cwd,
+        ...ws,
         agentId: agent.agentId,
         runId: result.id,
         handoffStatus: handoff.status,
@@ -309,14 +310,13 @@ export async function processIssue(
         };
       }
 
-      const verify = await runVerifyPhase(issue, config, workspaceKey, cwd);
+      const verify = await runVerifyPhase(issue, config, roots);
       if (!verify.ok) {
         store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
           status: "error",
-          workspace: workspaceKey,
-          cwd,
+          ...ws,
           agentId: agent.agentId,
           runId: result.id,
           handoffStatus: handoff.status,
@@ -339,8 +339,7 @@ export async function processIssue(
         issueKey: issue.key,
         summary: issue.summary,
         status: "verified",
-        workspace: workspaceKey,
-        cwd,
+        ...ws,
         agentId: agent.agentId,
         runId: result.id,
         handoffStatus: handoff.status,
@@ -373,8 +372,7 @@ export async function processIssue(
       issueKey: issue.key,
       summary: issue.summary,
       status: "error",
-      workspace: workspaceKey,
-      cwd,
+      ...ws,
       finishedAt: new Date().toISOString(),
       error: message,
     });
