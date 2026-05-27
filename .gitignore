@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+issue-dinner.config.json
+.state/
+*.log
+.DS_Store

@@ -1,0 +1,19 @@
+{
+  "epic": "CPD-635",
+  "model": "composer-2.5",
+  "workspaces": {
+    "backend": "/Users/alavoie/code/fileservice2",
+    "frontend": "/Users/alavoie/code/istari-frontend",
+    "sdk": "/Users/alavoie/code/istari-ts-client",
+    "schemas": "/Users/alavoie/code/api-schemas"
+  },
+  "defaultWorkspace": "backend",
+  "issueWorkspace": {
+    "CPD-636": "backend",
+    "CPD-637": "backend",
+    "CPD-638": "backend",
+    "CPD-639": "frontend",
+    "CPD-640": "schemas",
+    "CPD-641": "frontend"
+  }
+}
