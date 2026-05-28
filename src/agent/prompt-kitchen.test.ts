@@ -15,11 +15,13 @@ const config: MachineConfig = {
   blockerPolicy: "strict" as const,
   commitWip: true,
   recoveryAttempts: 2,
+  healAttempts: 3,
+  healTypecheckIterations: 8,
   quietRecovery: true,
 };
 
 describe("buildAgentPrompt kitchen section", () => {
-  it("documents the kitchen inbox when self-heal is enabled", () => {
+  it("documents direct source edit when self-heal is enabled", () => {
     const prompt = buildAgentPrompt({
       issue: {
         key: "CPD-636",
@@ -39,8 +41,9 @@ describe("buildAgentPrompt kitchen section", () => {
       kitchenRoot: "/tmp/issue-dinner",
     });
 
-    assert.match(prompt, /Kitchen \(issue-dinner self-heal — on by default\)/);
-    assert.match(prompt, /manifest\.json/);
+    assert.match(prompt, /issue-dinner self-heal \(on by default\)/);
+    assert.match(prompt, /Edit `src\/\*\*\/\*\.ts`/);
     assert.match(prompt, /\/tmp\/issue-dinner/);
+    assert.doesNotMatch(prompt, /manifest\.json/);
   });
 });

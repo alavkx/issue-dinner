@@ -63,6 +63,22 @@ export const MachineConfigSchema = Schema.Struct({
     ),
     { default: () => 2 },
   ),
+  healAttempts: Schema.optionalWith(
+    Schema.Number.pipe(
+      Schema.int(),
+      Schema.greaterThanOrEqualTo(1),
+      Schema.lessThanOrEqualTo(5),
+    ),
+    { default: () => 3 },
+  ),
+  healTypecheckIterations: Schema.optionalWith(
+    Schema.Number.pipe(
+      Schema.int(),
+      Schema.greaterThanOrEqualTo(1),
+      Schema.lessThanOrEqualTo(20),
+    ),
+    { default: () => 8 },
+  ),
   quietRecovery: Schema.optionalWith(Schema.Boolean, { default: () => true }),
 });
 

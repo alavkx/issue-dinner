@@ -11,11 +11,7 @@ import { parseTopLevelArgv } from "./epic/parse-argv.js";
 import { runMealArgv } from "./epic/run-meal.js";
 import { ensureAcli, fetchIssue } from "./jira/acli.js";
 import { stateStoreLayer } from "./paths.js";
-import {
-  formatKitchenStatus,
-  getKitchenStatus,
-  processKitchenInbox,
-} from "./self-heal/kitchen.js";
+import { formatHealStatus, getHealStatus } from "./self-heal/kitchen.js";
 import { contributeAppliedPatches } from "./self-heal/contribute.js";
 import { runWatchdog, stripWatchArgv } from "./runtime/watchdog.js";
 
@@ -97,44 +93,25 @@ program
     );
   });
 
-const kitchen = program
-  .command("kitchen")
-  .description("Self-heal queue for patching issue-dinner during serve runs");
+const heal = program
+  .command("heal")
+  .description("Self-heal status and upstream contribution for issue-dinner patches");
 
-kitchen
+heal
   .command("status")
-  .description("List inbox, applied, and failed kitchen patches")
+  .description("List durable heals and patches pending upstream PR")
   .action(() => {
     void Effect.runPromise(
       Effect.gen(function* () {
-        const status = yield* getKitchenStatus();
-        console.log(formatKitchenStatus(status));
+        const status = yield* getHealStatus();
+        console.log(formatHealStatus(status));
       }).pipe(Effect.provide(PlatformLive)),
     );
   });
 
-kitchen
-  .command("apply")
-  .description("Apply inbox patches (typecheck + build)")
-  .option("--dry-run", "Validate manifests without writing files")
-  .action((opts: { dryRun?: boolean }) => {
-    void Effect.runPromise(
-      processKitchenInbox({ dryRun: opts.dryRun }).pipe(
-        Effect.provide(PlatformLive),
-        Effect.tap((result) =>
-          Effect.sync(() => {
-            console.log(
-              `Applied: ${result.applied.join(", ") || "(none)"}; failed: ${result.failed.join(", ") || "(none)"}`,
-            );
-          }),
-        ),
-      ),
-    );
-  });
-
-kitchen
+heal
   .command("contribute")
-  .description("Open PRs for applied kitchen patches against main")
+  .description("Open PRs for healed patches against main")
   .option("--dry-run", "Print contribution plan without git/gh changes")
   .option("--patch <id>", "Contribute a single patch id")
   .option("--base <branch>", "Target base branch (default: main or ISSUE_DINNER_CONTRIBUTE_BASE)")

@@ -67,16 +67,8 @@ export function kitchenDir(root: string): string {
   return join(root, ".issue-dinner", "kitchen");
 }
 
-export function kitchenInbox(root: string): string {
-  return join(kitchenDir(root), "inbox");
-}
-
 export function kitchenApplied(root: string): string {
   return join(kitchenDir(root), "applied");
-}
-
-export function kitchenFailed(root: string): string {
-  return join(kitchenDir(root), "failed");
 }
 
 export const MANIFEST_FILE = "manifest.json";

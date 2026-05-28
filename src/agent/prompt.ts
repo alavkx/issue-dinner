@@ -35,28 +35,15 @@ export function buildAgentPrompt(ctx: PromptContext): string {
   const kitchenSection =
     selfHeal && kitchenRoot
       ? `
-## Kitchen (issue-dinner self-heal — on by default)
+## issue-dinner self-heal (on by default)
 
-If you discover a bug or missing capability in **issue-dinner itself** while working this course, patch the CLI sources instead of leaving a follow-up.
+If you discover a bug in **issue-dinner itself** while working this course, edit its source directly.
 
-1. Create \`.issue-dinner/kitchen/inbox/<short-name>/manifest.json\` under the issue-dinner root:
-   - **Root:** \`${kitchenRoot}\`
-2. Manifest shape:
-
-\`\`\`json
-{
-  "id": "<short-name>",
-  "issueKey": "${issue.key}",
-  "reason": "what you fixed in issue-dinner",
-  "files": [
-    { "path": "src/...", "content": "<full file contents>" }
-  ]
-}
-\`\`\`
-
-3. Only patch \`src/**/*.ts\` paths. issue-dinner applies patches **between courses**, runs typecheck + build, then hot-restarts the serve loop.
-4. After serve, run \`issue-dinner kitchen contribute\` to open a PR against \`main\` (or set \`ISSUE_DINNER_CONTRIBUTE_BASE\`).
-5. Prefer minimal, focused fixes. Do not patch unrelated files.
+- **issue-dinner root:** \`${kitchenRoot}\` (included in your workspace \`cwd\`)
+- Edit \`src/**/*.ts\` under that root with normal file tools — do not write JSON patch manifests.
+- Only patch issue-dinner when the blocker is in the CLI tool, not the project slice.
+- Prefer minimal, focused fixes. Do not patch unrelated files.
+- issue-dinner runs a dedicated **heal agent** when orchestration fails; you may fix inline if you spot the issue early.
 `
       : "";
 

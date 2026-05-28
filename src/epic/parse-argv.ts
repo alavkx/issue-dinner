@@ -8,7 +8,7 @@ export type ParsedArgv =
   | { mode: "meal"; epic: string; rest: string[]; configPath?: string }
   | { mode: "global"; rest: string[]; configPath?: string };
 
-const GLOBAL_COMMANDS = new Set(["show", "verify", "kitchen", "help", "--help", "-h"]);
+const GLOBAL_COMMANDS = new Set(["show", "verify", "heal", "help", "--help", "-h"]);
 
 const MEAL_COMMANDS = new Set([
   "list",
