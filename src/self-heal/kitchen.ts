@@ -123,7 +123,14 @@ const readManifest = (
       );
     }
     const raw = yield* fs.readFileString(manifestPath);
-    const decoded = yield* Schema.decodeUnknown(KitchenPatchManifest)(JSON.parse(raw)).pipe(
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (err) =>
+        new KitchenPatchInvalid({
+          message: `Invalid JSON in ${patchDir}: ${String(err)}`,
+        }),
+    });
+    const decoded = yield* Schema.decodeUnknown(KitchenPatchManifest)(parsed).pipe(
       Effect.mapError(
         (err) =>
           new KitchenPatchInvalid({

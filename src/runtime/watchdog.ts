@@ -90,7 +90,7 @@ const spawnSupervisedChild = (
   argv: ReadonlyArray<string>,
   reloadSignal: Queue.Queue<void>,
 ): Effect.Effect<
-  number,
+  { exitCode: number; reloaded: boolean },
   import("@effect/platform/Error").PlatformError,
   CommandExecutor.CommandExecutor
 > =>
@@ -100,12 +100,14 @@ const spawnSupervisedChild = (
       let cmd = Command.make(process.execPath, entry, ...argv);
       cmd = Command.env(cmd, { [WATCH_CHILD_ENV]: "1" });
       const child = yield* Command.start(cmd);
+      const reloadedRef = yield* Effect.sync(() => ({ value: false }));
 
       const exitFiber = yield* child.exitCode.pipe(Effect.fork);
       const reloadFiber = yield* Queue.take(reloadSignal).pipe(
         Effect.flatMap(() =>
           Effect.gen(function* () {
             out.phase("watchdog", "source changed — restarting child");
+            reloadedRef.value = true;
             yield* child.kill("SIGTERM");
           }),
         ),
@@ -115,7 +117,10 @@ const spawnSupervisedChild = (
 
       const exitCode = yield* Fiber.join(exitFiber);
       yield* Fiber.interrupt(reloadFiber);
-      return exitCode;
+      while ((yield* Queue.size(reloadSignal)) > 0) {
+        yield* Queue.take(reloadSignal);
+      }
+      return { exitCode, reloaded: reloadedRef.value };
     }),
   );
 
@@ -168,7 +173,12 @@ export const runWatchdog = (
       }
 
       out.phase("watchdog", `starting child (pass ${pass})`);
-      const exitCode = yield* spawnSupervisedChild(argv, reloadSignal);
+      const { exitCode, reloaded } = yield* spawnSupervisedChild(argv, reloadSignal);
+
+      if (reloaded) {
+        out.info("watchdog: reloading child after source change");
+        continue;
+      }
 
       if (exitCode === RESTART_EXIT_CODE) {
         out.info("watchdog: child requested restart");

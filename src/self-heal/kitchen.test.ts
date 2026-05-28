@@ -125,6 +125,24 @@ describe("processKitchenInbox", () => {
           ),
       }),
     ));
+
+  it("rejects invalid manifest JSON in inbox", () =>
+    withKitchenRoot(({ root }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const patchDir = join(kitchenInbox(root), "bad-json");
+        yield* fs.makeDirectory(patchDir, { recursive: true });
+        yield* fs.writeFileString(join(patchDir, MANIFEST_FILE), "{ not json");
+
+        const result = yield* processKitchenInbox().pipe(
+          Effect.match({
+            onFailure: (err) => err,
+            onSuccess: () => "unexpected-success",
+          }),
+        );
+        assert.match(String(result), /Invalid JSON/);
+      }),
+    ));
 });
 
 describe("contributeAppliedPatches", () => {

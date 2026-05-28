@@ -238,7 +238,14 @@ const readAppliedManifest = (
       );
     }
     const raw = yield* fs.readFileString(manifestPath);
-    return yield* Schema.decodeUnknown(KitchenPatchManifest)(JSON.parse(raw)).pipe(
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (err) =>
+        new KitchenPatchInvalid({
+          message: `Invalid JSON in ${patchDir}: ${String(err)}`,
+        }),
+    });
+    return yield* Schema.decodeUnknown(KitchenPatchManifest)(parsed).pipe(
       Effect.mapError(
         (err) =>
           new KitchenPatchInvalid({
@@ -361,39 +368,51 @@ const contributeSinglePatch = (
     }
 
     const originalBranch = yield* git.readBranch(root);
-    yield* git.checkout(root, baseBranch);
-    yield* git.createBranch(root, branch);
-    const paths = yield* writeManifestFiles(root, manifest);
-    yield* git.add(root, paths);
-    const commitSha = yield* git.commit(root, contributionCommitMessage(manifest));
-    yield* git.push(root, remote, branch);
-    const prUrl = yield* git.createPullRequest({
-      root,
-      baseBranch,
-      branch,
-      remote,
-      title: contributionPrTitle(manifest),
-      body: contributionPrBody(manifest),
-    });
 
-    yield* writeContributionRecord(
-      patchDir,
-      new KitchenContributionRecord({
-        patchId,
-        branch,
-        commitSha,
-        prUrl,
-        contributedAt: new Date().toISOString(),
+    const outcome = yield* Effect.gen(function* () {
+      yield* git.checkout(root, baseBranch);
+      yield* git.createBranch(root, branch);
+      const paths = yield* writeManifestFiles(root, manifest);
+      yield* git.add(root, paths);
+      const commitSha = yield* git.commit(root, contributionCommitMessage(manifest));
+      yield* git.push(root, remote, branch);
+      const prUrl = yield* git.createPullRequest({
+        root,
         baseBranch,
+        branch,
         remote,
-      }),
+        title: contributionPrTitle(manifest),
+        body: contributionPrBody(manifest),
+      });
+
+      yield* writeContributionRecord(
+        patchDir,
+        new KitchenContributionRecord({
+          patchId,
+          branch,
+          commitSha,
+          prUrl,
+          contributedAt: new Date().toISOString(),
+          baseBranch,
+          remote,
+        }),
+      );
+
+      return { ok: true as const, patchId, prUrl };
+    }).pipe(
+      Effect.ensuring(
+        git.checkout(root, originalBranch).pipe(Effect.catchAll(() => Effect.void)),
+      ),
+      Effect.catchAll((err) =>
+        Effect.succeed({
+          ok: false as const,
+          patchId,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      ),
     );
 
-    if (originalBranch && originalBranch !== branch) {
-      yield* git.checkout(root, originalBranch).pipe(Effect.catchAll(() => Effect.void));
-    }
-
-    return { ok: true as const, patchId, prUrl };
+    return outcome;
   }).pipe(
     Effect.catchAll((err) =>
       Effect.succeed({
