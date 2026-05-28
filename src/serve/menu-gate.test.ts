@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
+import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
 import type { JiraIssue } from "../jira/acli.js";
-import { StateStore } from "../state/store.js";
+import { runEffect } from "../effect/test-runtime.js";
+import { StateStore, layer as stateStoreLayer } from "../state/store.js";
 import { menuOrderBlocks } from "./menu-gate.js";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import * as FileSystem from "@effect/platform/FileSystem";
 
 function issue(key: string): JiraIssue {
   return {
@@ -17,38 +17,49 @@ function issue(key: string): JiraIssue {
   };
 }
 
-describe("menuOrderBlocks", () => {
-  it("blocks when a prior course is agent_complete", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir, "strict");
-      store.upsert({
-        issueKey: "CPD-637",
-        summary: "a",
-        status: "agent_complete",
-      });
-      const menu = [issue("CPD-637"), issue("CPD-638")];
-      const gate = menuOrderBlocks(store, menu, 1, new Set());
-      assert.equal(gate.ok, false);
-      assert.match(gate.reason ?? "", /CPD-637/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+function withStore<A>(
+  run: Effect.Effect<A, unknown, StateStore>,
+): Promise<A> {
+  return runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectory({ prefix: "issue-dinner-" });
+      return yield* run.pipe(Effect.provide(stateStoreLayer(dir, "strict")));
+    }),
+  );
+}
 
-  it("allows next course when prior is verified", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir, "strict");
-      store.upsert({
-        issueKey: "CPD-637",
-        summary: "a",
-        status: "verified",
-      });
-      const menu = [issue("CPD-637"), issue("CPD-638")];
-      assert.equal(menuOrderBlocks(store, menu, 1, new Set()).ok, true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+describe("menuOrderBlocks", () => {
+  it("blocks when a prior course is agent_complete", () =>
+    withStore(
+      Effect.gen(function* () {
+        const store = yield* StateStore;
+        yield* store.upsert({
+          issueKey: "CPD-637",
+          summary: "a",
+          status: "agent_complete",
+        });
+        const menu = [issue("CPD-637"), issue("CPD-638")];
+        const gate = yield* menuOrderBlocks(menu, 1, new Set());
+        assert.equal(gate.ok, false);
+        assert.match(gate.reason ?? "", /CPD-637/);
+      }),
+    ));
+
+  it("allows next course when prior is verified", () =>
+    withStore(
+      Effect.gen(function* () {
+        const store = yield* StateStore;
+        yield* store.upsert({
+          issueKey: "CPD-637",
+          summary: "a",
+          status: "verified",
+        });
+        const menu = [issue("CPD-637"), issue("CPD-638")];
+        assert.equal(
+          (yield* menuOrderBlocks(menu, 1, new Set())).ok,
+          true,
+        );
+      }),
+    ));
 });

@@ -1,20 +1,20 @@
 import { existsSync } from "node:fs";
 import type { DinnerConfig } from "../config.js";
-import {
-  resolveIssueWorkspaces,
-} from "../config/workspaces.js";
+import { resolveIssueWorkspaces } from "../config/workspaces.js";
 import { cursorApiKeyEnvName } from "../env.js";
 import { recoverDirtyWorkspace } from "../git/recover-workspace.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import { commandExists, runCommand } from "../util/exec.js";
 import { validateVerifyCommands } from "../verify/validate.js";
-import type { StateStore } from "../state/store.js";
+import { StateStore } from "../state/store.js";
 import {
   explainPreflightFailure,
   type PreflightExplanation,
 } from "../serve/explain.js";
 import { fg } from "../ui/theme.js";
+import * as Effect from "effect/Effect";
+import * as Either from "effect/Either";
 
 export interface PreflightIssue {
   ok: boolean;
@@ -37,43 +37,56 @@ function push(
 }
 
 /** Issue whose WIP likely owns a dirty workspace (resume / in-progress). */
-function recoveryIssueForWorkspace(
+const recoveryIssueForWorkspace = (
   workspaceKey: string,
   menuIssues: JiraIssue[],
   config: DinnerConfig,
-  store?: StateStore,
-): JiraIssue | undefined {
-  const touches = (issue: JiraIssue) =>
-    resolveIssueWorkspaces(
-      config,
-      issue.key,
-      issue.description,
-      issue.summary,
-    ).keys.includes(workspaceKey);
+): Effect.Effect<JiraIssue | undefined, never, StateStore> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    const touches = (issue: JiraIssue) =>
+      resolveIssueWorkspaces(
+        config,
+        issue.key,
+        issue.description,
+        issue.summary,
+      ).keys.includes(workspaceKey);
 
-  const agentComplete = menuIssues.find(
-    (i) =>
-      touches(i) && store?.get(i.key)?.status === "agent_complete",
-  );
-  if (agentComplete) return agentComplete;
+    for (const issue of menuIssues) {
+      if (
+        touches(issue) &&
+        (yield* store.get(issue.key))?.status === "agent_complete"
+      ) {
+        return issue;
+      }
+    }
 
-  const running = menuIssues.find(
-    (i) => touches(i) && store?.get(i.key)?.status === "running",
-  );
-  if (running) return running;
+    for (const issue of menuIssues) {
+      if (
+        touches(issue) &&
+        (yield* store.get(issue.key))?.status === "running"
+      ) {
+        return issue;
+      }
+    }
 
-  return menuIssues.find(touches);
-}
+    return menuIssues.find(touches);
+  });
 
-function shouldSkipVerifyPathsForIssue(
+const shouldSkipVerifyPathsForIssue = (
   issueKey: string,
-  store?: StateStore,
-): boolean {
-  const status = store?.get(issueKey)?.status;
-  return status === "verified" || status === "finished" || status === "agent_complete";
-}
+): Effect.Effect<boolean, never, StateStore> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    const status = (yield* store.get(issueKey))?.status;
+    return (
+      status === "verified" ||
+      status === "finished" ||
+      status === "agent_complete"
+    );
+  });
 
-export async function runPreflight(options: {
+export const runPreflight = (options: {
   config: DinnerConfig;
   stack: StackConfig;
   menuIssues: JiraIssue[];
@@ -81,87 +94,106 @@ export async function runPreflight(options: {
   checkGraphite?: boolean;
   checkTmux?: boolean;
   validateVerify?: boolean;
-  /** Skip verify path checks for courses already marked verified (wrong branch on disk). */
-  store?: StateStore;
-}): Promise<PreflightReport> {
-  const issues: PreflightIssue[] = [];
-  const apiEnv = cursorApiKeyEnvName();
+}): Effect.Effect<PreflightReport, never, StateStore> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    const issues: PreflightIssue[] = [];
+    const apiEnv = cursorApiKeyEnvName();
 
-  if (options.requireApiKey !== false) {
-    const key = process.env[apiEnv]?.trim();
+    if (options.requireApiKey !== false) {
+      const key = process.env[apiEnv]?.trim();
+      push(
+        issues,
+        Boolean(key),
+        key ? `${apiEnv} is set` : `${apiEnv} is not set`,
+        key
+          ? undefined
+          : `export ${apiEnv}="cursor_…"  # https://cursor.com/dashboard/integrations`,
+      );
+    }
+
     push(
       issues,
-      Boolean(key),
-      key ? `${apiEnv} is set` : `${apiEnv} is not set`,
-      key
-        ? undefined
-        : `export ${apiEnv}="cursor_…"  # https://cursor.com/dashboard/integrations`,
+      commandExists("acli"),
+      "acli on PATH",
+      "Install Atlassian CLI and run: acli jira auth login --web",
     );
-  }
 
-  push(
-    issues,
-    commandExists("acli"),
-    "acli on PATH",
-    "Install Atlassian CLI and run: acli jira auth login --web",
-  );
-
-  push(
-    issues,
-    commandExists("cursor"),
-    "cursor CLI on PATH (local agents)",
-    "Install Cursor CLI — issue-dinner runs local SDK agents, not cloud",
-  );
-
-  if (options.checkGraphite !== false) {
     push(
       issues,
-      commandExists("gt"),
-      "gt (Graphite) on PATH",
-      "Install Graphite CLI or use --no-prep on launch",
+      commandExists("cursor"),
+      "cursor CLI on PATH (local agents)",
+      "Install Cursor CLI — issue-dinner runs local SDK agents, not cloud",
     );
-  }
 
-  if (options.checkTmux) {
-    push(
-      issues,
-      commandExists("tmux"),
-      "tmux on PATH",
-      "Install tmux or run: issue-dinner CPD-XXX serve",
-    );
-  }
+    if (options.checkGraphite !== false) {
+      push(
+        issues,
+        commandExists("gt"),
+        "gt (Graphite) on PATH",
+        "Install Graphite CLI or use --no-prep on launch",
+      );
+    }
 
-  for (const [key, cwd] of Object.entries(options.config.workspaces)) {
-    const exists = existsSync(cwd);
-    push(
-      issues,
-      exists,
-      `workspace ${key}: ${cwd}`,
-      exists ? undefined : `Fix workspaces.${key} in ~/.config/issue-dinner/config.json`,
-    );
-    if (!exists) continue;
+    if (options.checkTmux) {
+      push(
+        issues,
+        commandExists("tmux"),
+        "tmux on PATH",
+        "Install tmux or run: issue-dinner CPD-XXX serve",
+      );
+    }
 
-    try {
-      const { stdout } = await runCommand("git", ["status", "--porcelain"], {
-        cwd,
-      });
+    for (const [key, cwd] of Object.entries(options.config.workspaces)) {
+      const exists = existsSync(cwd);
+      push(
+        issues,
+        exists,
+        `workspace ${key}: ${cwd}`,
+        exists
+          ? undefined
+          : `Fix workspaces.${key} in ~/.config/issue-dinner/config.json`,
+      );
+      if (!exists) continue;
+
+      const statusOutcome = yield* Effect.tryPromise({
+        try: () =>
+          runCommand("git", ["status", "--porcelain"], {
+            cwd,
+          }),
+        catch: (err) => err,
+      }).pipe(Effect.either);
+
+      if (Either.isLeft(statusOutcome)) {
+        push(
+          issues,
+          false,
+          `${key}: git status failed`,
+          `Check ${cwd} is a git repo`,
+        );
+        continue;
+      }
+
+      const { stdout } = statusOutcome.right;
       let clean = stdout.trim().length === 0;
       if (!clean) {
-        const issue = recoveryIssueForWorkspace(
+        const issue = yield* recoveryIssueForWorkspace(
           key,
           options.menuIssues,
           options.config,
-          options.store,
         );
         if (issue) {
-          const recovered = await recoverDirtyWorkspace(
-            key,
-            cwd,
-            issue.key,
-            issue.summary,
-          );
-          if (recovered.ok) {
+          const recoveredOutcome = yield* Effect.tryPromise({
+            try: () =>
+              recoverDirtyWorkspace(key, cwd, issue.key, issue.summary),
+            catch: (err) => err,
+          }).pipe(Effect.either);
+          if (
+            Either.isRight(recoveredOutcome) &&
+            recoveredOutcome.right.ok
+          ) {
             clean = true;
+            const recovered = recoveredOutcome.right;
             push(
               issues,
               true,
@@ -178,64 +210,63 @@ export async function runPreflight(options: {
         continue;
       }
       push(issues, true, `${key}: working tree clean`);
-    } catch {
-      push(issues, false, `${key}: git status failed`, `Check ${cwd} is a git repo`);
     }
-  }
 
-  if (options.checkGraphite !== false && commandExists("gt")) {
-    for (const [key, cwd] of Object.entries(options.config.workspaces)) {
-      if (!existsSync(cwd)) continue;
-      try {
-        await runCommand(
-          "gt",
-          ["log", "short", "--cwd", cwd],
-          { cwd },
-        );
-        push(issues, true, `${key}: Graphite initialized`);
-      } catch {
-        push(
-          issues,
-          false,
-          `${key}: Graphite not initialized`,
-          `cd ${cwd} && gt init && gt track --parent ${options.stack.graphiteTrunk}`,
-        );
+    if (options.checkGraphite !== false && commandExists("gt")) {
+      for (const [key, cwd] of Object.entries(options.config.workspaces)) {
+        if (!existsSync(cwd)) continue;
+        const gtOutcome = yield* Effect.tryPromise({
+          try: () =>
+            runCommand("gt", ["log", "short", "--cwd", cwd], { cwd }),
+          catch: (err) => err,
+        }).pipe(Effect.either);
+        if (Either.isLeft(gtOutcome)) {
+          push(
+            issues,
+            false,
+            `${key}: Graphite not initialized`,
+            `cd ${cwd} && gt init && gt track --parent ${options.stack.graphiteTrunk}`,
+          );
+        } else {
+          push(issues, true, `${key}: Graphite initialized`);
+        }
       }
     }
-  }
 
-  if (options.validateVerify !== false) {
-    const gate = options.config.serveVerifyGate ?? "inner";
-    for (const issue of options.menuIssues) {
-      if (shouldSkipVerifyPathsForIssue(issue.key, options.store)) {
-        push(
-          issues,
-          true,
-          `${issue.key}: verify paths skipped (${options.store?.get(issue.key)?.status ?? "done"} in dinner state)`,
+    if (options.validateVerify !== false) {
+      const gate = options.config.serveVerifyGate ?? "inner";
+      for (const issue of options.menuIssues) {
+        if (yield* shouldSkipVerifyPathsForIssue(issue.key)) {
+          const status =
+            (yield* store.get(issue.key))?.status ?? "done";
+          push(
+            issues,
+            true,
+            `${issue.key}: verify paths skipped (${status} in dinner state)`,
+          );
+          continue;
+        }
+        const roots = resolveIssueWorkspaces(
+          options.config,
+          issue.key,
+          issue.description,
+          issue.summary,
         );
-        continue;
-      }
-      const roots = resolveIssueWorkspaces(
-        options.config,
-        issue.key,
-        issue.description,
-        issue.summary,
-      );
-      const validation = validateVerifyCommands(
-        options.config,
-        issue.key,
-        roots.keys,
-        { gate },
-      );
-      for (const v of validation) {
-        push(issues, v.ok, `${issue.key}: ${v.message}`, v.fix);
+        const validation = validateVerifyCommands(
+          options.config,
+          issue.key,
+          roots.keys,
+          { gate },
+        );
+        for (const v of validation) {
+          push(issues, v.ok, `${issue.key}: ${v.message}`, v.fix);
+        }
       }
     }
-  }
 
-  const ok = issues.every((i) => i.ok);
-  return { ok, issues };
-}
+    const ok = issues.every((i) => i.ok);
+    return { ok, issues };
+  });
 
 function issueKeyFromPreflightMessage(message: string): string | undefined {
   const m = message.match(/^(CPD-\d+):/);
@@ -265,7 +296,11 @@ export function formatPreflightReport(report: PreflightReport): string {
 
   if (!report.ok) {
     lines.push("");
-    lines.push(fg.bold(fg.red("Cannot start serve until the ✗ items above are fixed.")));
+    lines.push(
+      fg.bold(
+        fg.red("Cannot start serve until the ✗ items above are fixed."),
+      ),
+    );
     if (failures.length === 1) {
       lines.push(fg.red(`Next step: ${failures[0]!.steps[0]}`));
     }

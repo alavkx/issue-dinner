@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import { z } from "zod";
+import { ConfigNotFound } from "./effect/errors.js";
 
 const VerifyTierSchema = z.enum(["inner", "outer"]);
 
@@ -81,7 +84,7 @@ export function findConfigPath(explicit?: string): string | undefined {
   return undefined;
 }
 
-export function loadMachineConfig(explicit?: string): MachineConfig {
+export function loadMachineConfigSync(explicit?: string): MachineConfig {
   const path = findConfigPath(explicit);
   if (!path) {
     throw new Error(
@@ -92,8 +95,38 @@ export function loadMachineConfig(explicit?: string): MachineConfig {
   return MachineConfigSchema.parse(raw);
 }
 
-/** @deprecated Use loadMachineConfig */
-export const loadConfig = loadMachineConfig;
+export const loadMachineConfig = (
+  explicit?: string,
+): Effect.Effect<MachineConfig, ConfigNotFound, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const path = findConfigPath(explicit);
+    if (!path) {
+      return yield* Effect.fail(
+        new ConfigNotFound({
+          message:
+            "No install config found. Create ~/.config/issue-dinner/config.json (see config.example.json).",
+        }),
+      );
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const raw = yield* fs.readFileString(path).pipe(
+      Effect.catchAll(() =>
+        Effect.fail(
+          new ConfigNotFound({ message: `Could not read config at ${path}` }),
+        ),
+      ),
+    );
+    try {
+      return MachineConfigSchema.parse(JSON.parse(raw) as unknown);
+    } catch {
+      return yield* Effect.fail(
+        new ConfigNotFound({ message: `Invalid config at ${path}` }),
+      );
+    }
+  });
+
+/** @deprecated Use loadMachineConfig Effect program. */
+export const loadConfig = loadMachineConfigSync;
 
 export {
   formatWorkspacesLabel,
