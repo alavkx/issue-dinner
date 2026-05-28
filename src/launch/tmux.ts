@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { cursorApiKeyEnvName } from "../env.js";
+import { formatAttachReplay } from "../serve/transcript.js";
+import { sessionHistoryPath } from "../serve/transcript.js";
 import { commandExists, shellQuote } from "../util/exec.js";
 
 export interface LaunchOptions {
@@ -8,6 +10,8 @@ export interface LaunchOptions {
   innerCommand: string;
   /** Cursor API key — embedded in the tmux shell (tmux often drops inherited env). */
   apiKey: string;
+  /** Epic key for session-history replay on attach (e.g. CPD-635). */
+  epic?: string;
   /** Run tmux detached instead of attaching the caller (default: attach). */
   detach?: boolean;
 }
@@ -31,20 +35,30 @@ export function tmuxHasSession(session: string): boolean {
 export function buildLaunchShellCommand(
   innerCommand: string,
   apiKey: string,
+  epic?: string,
 ): string {
   const apiEnv = cursorApiKeyEnvName();
   if (!apiKey.trim()) {
     return [`echo "Missing ${apiEnv}" >&2`, "exit 1"].join("; ");
   }
   const shell = process.env.SHELL?.trim() || "/bin/zsh";
+  const historyHint = epic
+    ? `echo "Session history: ${sessionHistoryPath(epic)}"`
+    : "true";
+  const replay = epic
+    ? `printf %s ${shellQuote(formatAttachReplay(epic, 60))}`
+    : "true";
   return [
     `export ${apiEnv}=${shellQuote(apiKey.trim())}`,
+    historyHint,
+    replay,
     innerCommand,
     "ec=$?",
     'echo ""',
     'echo "══════════════════════════════════════════════════════════"',
     'echo "serve finished (exit $ec) — shell stays open (Ctrl-d to close)"',
-    'echo "  issue-dinner status"',
+    'echo "  Re-run: issue-dinner EPIC serve --exclude …"',
+    'echo "  Logs: tail -f ~/.local/state/issue-dinner/EPIC/serve-latest.log"',
     'echo "══════════════════════════════════════════════════════════"',
     `exec ${shellQuote(shell)} -l`,
   ].join("; ");
@@ -59,7 +73,11 @@ function attachToSession(session: string): void {
 
 export function launchInTmux(opts: LaunchOptions): void {
   ensureTmux();
-  const shellCmd = buildLaunchShellCommand(opts.innerCommand, opts.apiKey);
+  const shellCmd = buildLaunchShellCommand(
+    opts.innerCommand,
+    opts.apiKey,
+    opts.epic,
+  );
   const detach = opts.detach ?? false;
 
   if (tmuxHasSession(opts.session)) {
@@ -72,7 +90,7 @@ export function launchInTmux(opts: LaunchOptions): void {
     return;
   }
 
-  const args = ["new-session"];
+  const args = ["new-session", "-x", "220", "-y", "60"];
   if (detach) args.push("-d");
   args.push("-s", opts.session, shellCmd);
 

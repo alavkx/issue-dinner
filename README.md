@@ -33,6 +33,7 @@ export ISSUE_DINNER_CURSOR_API_KEY="cursor_..."
 | `verifyCommands` / `issueVerifyCommands` | Shell verify gates (paths must exist — preflight checks) |
 | `commitWip` | Commit agent WIP on story branches after each course (default `true`) |
 | `blockerPolicy` | `strict` (only `verified` unblocks) or `agent_complete` |
+| `quietRecovery` | Recovery agents log to transcript only (default `true`) |
 
 State is per epic: `~/.local/state/issue-dinner/CPD-635/runs.json`  
 Serve log: `~/.local/state/issue-dinner/CPD-635/serve-latest.log`
@@ -58,7 +59,13 @@ issue-dinner CPD-635 cook CPD-636 --force
 issue-dinner verify CPD-636
 ```
 
-`launch` and `serve` run **preflight** first (API key, acli, cursor CLI, clean trees, verify paths). Failures print fix hints inline. Use `--skip-preflight` only when you know the runway is good.
+`launch` and `serve` run **preflight** first (API key, acli, cursor CLI, inner verify paths). Dirty trees are auto-committed when possible, otherwise warned (not blocked). Verified and in-progress courses skip path checks. Use `--skip-preflight` only when you know the runway is good.
+
+`serve` skips **verified** courses by default (`--no-skip-done` to re-run them).
+
+**Menu order:** each course requires prior courses in the epic menu to be **verified** (not merely `agent_complete`). `--continue-on-error` does not skip this — it only avoids stopping the loop on the first verify failure; dirty repos always halt the menu.
+
+On failure, dinner prints a **DINNER HALTED** block after the summary with the blocking course and reason.
 
 Use `--detach` on launch to background tmux. Default attaches you to the session; when serve finishes the shell stays open.
 

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import type { DinnerConfig } from "../config.js";
 import { resolveVerifyCommandsForIssue } from "./resolve.js";
+import { effectiveVerifyTier } from "./tier.js";
 
 const base: DinnerConfig = {
   model: "composer-2.5",
@@ -9,10 +14,13 @@ const base: DinnerConfig = {
   defaultWorkspace: "backend",
   settingSources: ["project"],
   requireVerify: true,
+  serveVerifyGate: "inner",
   requireHandoffTests: true,
   graphiteTrunk: "main",
   blockerPolicy: "strict" as const,
   commitWip: true,
+  recoveryAttempts: 2,
+  quietRecovery: true,
 };
 
 describe("resolveVerifyCommands", () => {
@@ -46,5 +54,40 @@ describe("resolveVerifyCommands", () => {
     assert.equal(cmds.length, 2);
     assert.equal(cmds[0]?.cwd, "/tmp/be");
     assert.equal(cmds[1]?.cwd, "/tmp/fe");
+  });
+
+  it("infers inner unit tests from outer-only issue commands", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "issue-dinner-resolve-"));
+    const unitDir = join(cwd, "tests/v3/unit_test");
+    const intDir = join(cwd, "tests/v3/integration");
+    mkdirSync(unitDir, { recursive: true });
+    mkdirSync(intDir, { recursive: true });
+    writeFileSync(join(unitDir, "test_notification_service.py"), "");
+    writeFileSync(join(intDir, "test_notification_routes.py"), "");
+
+    const config: DinnerConfig = {
+      ...base,
+      workspaces: { backend: cwd },
+      issueVerifyCommands: {
+        "CPD-638": [
+          {
+            name: "notifications-integration",
+            tier: "outer",
+            command: "poetry",
+            args: [
+              "run",
+              "pytest",
+              "tests/v3/integration/test_notification_routes.py",
+              "-q",
+            ],
+            workspace: "backend",
+          },
+        ],
+      },
+    };
+    const cmds = resolveVerifyCommandsForIssue(config, "CPD-638", ["backend"]);
+    const inner = cmds.filter((c) => effectiveVerifyTier(c) === "inner");
+    assert.ok(inner.length >= 1);
+    assert.ok(inner.some((c) => c.args.some((a) => a.includes("unit_test"))));
   });
 });

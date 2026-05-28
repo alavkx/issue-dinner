@@ -9,10 +9,13 @@ const config: DinnerConfig = {
   defaultWorkspace: "backend",
   settingSources: ["project"],
   requireVerify: true,
+  serveVerifyGate: "inner",
   requireHandoffTests: true,
   graphiteTrunk: "main",
   blockerPolicy: "strict" as const,
   commitWip: true,
+  recoveryAttempts: 2,
+  quietRecovery: true,
   issueVerifyCommands: {
     "CPD-636": [
       {

@@ -4,7 +4,7 @@ export function formatVerifyCommandsForPrompt(
   commands: ResolvedVerifyCommand[],
 ): string {
   if (commands.length === 0) {
-    return "(no verify commands configured — ask the operator to add issueVerifyCommands in install config)";
+    return "(no automated tests wired for this story — agent should still run tests from the ticket and handoff)";
   }
   return commands
     .map(

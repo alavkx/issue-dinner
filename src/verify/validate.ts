@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { DinnerConfig } from "../config.js";
+import type { DinnerConfig, ServeVerifyGate } from "../config.js";
 import { commandExists } from "../util/exec.js";
 import { resolveVerifyCommandsForIssue } from "./resolve.js";
+import { filterVerifyCommandsForServe } from "./runner.js";
 
 export interface VerifyValidationResult {
   ok: boolean;
@@ -27,15 +28,35 @@ export function validateVerifyCommands(
   config: DinnerConfig,
   issueKey: string,
   workspaceKeys: string[],
+  options: { gate?: ServeVerifyGate } = {},
 ): VerifyValidationResult[] {
   const results: VerifyValidationResult[] = [];
-  const commands = resolveVerifyCommandsForIssue(config, issueKey, workspaceKeys);
+  const all = resolveVerifyCommandsForIssue(config, issueKey, workspaceKeys);
+  const gate = options.gate ?? "full";
+  const commands = filterVerifyCommandsForServe(all, gate);
+  if (gate === "inner" && all.length > commands.length) {
+    results.push({
+      ok: true,
+      message: `verify: ${all.length - commands.length} outer command(s) deferred (serveVerifyGate=inner)`,
+    });
+  }
 
   if (commands.length === 0) {
+    if (gate === "inner") {
+      const detail =
+        all.length > 0
+          ? "only slow tests — quick checks skipped during serve"
+          : "no test recipe — quick checks skipped during serve";
+      results.push({
+        ok: true,
+        message: `verify: ${issueKey} ${detail}`,
+      });
+      return results;
+    }
     results.push({
       ok: false,
-      message: `verify: no commands configured`,
-      fix: `Add issueVerifyCommands.${issueKey} or verifyCommands in config.json`,
+      message: `verify: no test commands configured for ${issueKey}`,
+      fix: `Run: issue-dinner verify ${issueKey} after wiring tests, or use serveVerifyGate inner (default) to skip blocking`,
     });
     return results;
   }
@@ -67,7 +88,7 @@ export function validateVerifyCommands(
         message: `verify ${cmd.name}: ${rel} ${exists ? "exists" : "missing"} (${cmd.cwd})`,
         fix: exists
           ? undefined
-          : `Create ${rel} or update verify args in config.json for ${issueKey}`,
+          : `Create ${rel} in the repo or re-run after the agent adds tests for ${issueKey}`,
       });
     }
   }

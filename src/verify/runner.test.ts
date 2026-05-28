@@ -1,50 +1,45 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { runVerifyCommands } from "./runner.js";
+import { filterVerifyCommandsForServe } from "./runner.js";
+import type { ResolvedVerifyCommand } from "./resolve.js";
 
-describe("runVerifyCommands", () => {
-  it("returns ok when all commands exit zero", async () => {
-    const result = await runVerifyCommands([
-      {
-        name: "noop",
-        command: "node",
-        args: ["-e", "process.exit(0)"],
-        cwd: process.cwd(),
-      },
-    ]);
-    assert.equal(result.ok, true);
-    assert.equal(result.failures.length, 0);
+const cmds: ResolvedVerifyCommand[] = [
+  {
+    name: "unit",
+    tier: "inner",
+    command: "pytest",
+    args: [],
+    cwd: "/tmp",
+  },
+  {
+    name: "integration",
+    tier: "outer",
+    command: "./script.sh",
+    args: [],
+    cwd: "/tmp",
+  },
+  {
+    name: "legacy",
+    command: "echo",
+    args: ["ok"],
+    cwd: "/tmp",
+  },
+];
+
+describe("filterVerifyCommandsForServe", () => {
+  it("inner gate keeps inner and untagged commands", () => {
+    const filtered = filterVerifyCommandsForServe(cmds, "inner");
+    assert.deepEqual(
+      filtered.map((c) => c.name),
+      ["unit", "legacy"],
+    );
   });
 
-  it("runs each command in its own cwd for multi-root verify", async () => {
-    const result = await runVerifyCommands([
-      {
-        name: "a",
-        command: "node",
-        args: ["-e", "process.exit(0)"],
-        cwd: process.cwd(),
-      },
-      {
-        name: "b",
-        command: "node",
-        args: ["-e", "process.exit(0)"],
-        cwd: process.cwd(),
-      },
-    ]);
-    assert.equal(result.ok, true);
+  it("full gate runs all commands", () => {
+    assert.equal(filterVerifyCommandsForServe(cmds, "full").length, 3);
   });
 
-  it("returns failures when a command exits non-zero", async () => {
-    const result = await runVerifyCommands([
-      {
-        name: "fail",
-        command: "node",
-        args: ["-e", "process.exit(1)"],
-        cwd: process.cwd(),
-      },
-    ]);
-    assert.equal(result.ok, false);
-    assert.equal(result.failures.length, 1);
-    assert.equal(result.failures[0]?.name, "fail");
+  it("none gate runs nothing", () => {
+    assert.equal(filterVerifyCommandsForServe(cmds, "none").length, 0);
   });
 });

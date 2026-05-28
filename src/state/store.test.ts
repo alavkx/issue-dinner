@@ -43,6 +43,22 @@ describe("StateStore.isDone", () => {
     }
   });
 
+  it("appendResolutionStep accumulates steps", () => {
+    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
+    try {
+      const store = new StateStore(dir);
+      store.setEpic("CPD-635");
+      store.appendResolutionStep("CPD-637", "first");
+      store.appendResolutionStep("CPD-637", "second");
+      assert.deepEqual(store.get("CPD-637")?.resolutionSteps, [
+        "first",
+        "second",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("recovers stale running records", () => {
     const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
     try {

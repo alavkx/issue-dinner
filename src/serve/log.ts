@@ -1,14 +1,17 @@
 import { createWriteStream, existsSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { stateDirForEpic } from "../paths.js";
+import { appendSessionHistory, sessionHistoryPath } from "./transcript.js";
 
 export class ServeLogger {
   readonly logPath: string;
+  readonly epic: string;
   private readonly stream: NodeJS.WritableStream;
   private readonly origOut: typeof process.stdout.write;
   private readonly origErr: typeof process.stderr.write;
 
-  private constructor(logPath: string, stream: NodeJS.WritableStream) {
+  private constructor(epic: string, logPath: string, stream: NodeJS.WritableStream) {
+    this.epic = epic;
     this.logPath = logPath;
     this.stream = stream;
     this.origOut = process.stdout.write.bind(process.stdout);
@@ -34,21 +37,30 @@ export class ServeLogger {
       /* ignore */
     }
     const stream = createWriteStream(logPath, { flags: "a" });
-    return new ServeLogger(logPath, stream);
+    appendSessionHistory(
+      epic,
+      `\n════ serve ${stamp} ════ log=${logPath} history=${sessionHistoryPath(epic)}\n`,
+    );
+    return new ServeLogger(epic, logPath, stream);
+  }
+
+  private tee(text: string): void {
+    this.stream.write(text);
+    appendSessionHistory(this.epic, text);
   }
 
   attach(): void {
     process.stdout.write = ((chunk, encoding, cb) => {
       const text =
         typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-      this.stream.write(text);
+      this.tee(text);
       return this.origOut(chunk, encoding as BufferEncoding, cb);
     }) as typeof process.stdout.write;
 
     process.stderr.write = ((chunk, encoding, cb) => {
       const text =
         typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-      this.stream.write(text);
+      this.tee(text);
       return this.origErr(chunk, encoding as BufferEncoding, cb);
     }) as typeof process.stderr.write;
   }

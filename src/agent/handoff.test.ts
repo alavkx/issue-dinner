@@ -32,6 +32,16 @@ unit-test-verified
     assert.equal(h.status, "unknown");
     assert.equal(h.verification, "not-verified");
   });
+
+  it("accepts recovery-style fixed/ready status", () => {
+    const h = parseHandoff(`## Status
+**Fixed.**
+
+## Verification
+unit-test-verified
+`);
+    assert.equal(h.status, "success");
+  });
 });
 
 describe("agentPhaseSucceeded", () => {

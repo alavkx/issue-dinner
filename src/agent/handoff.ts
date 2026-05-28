@@ -26,10 +26,16 @@ function section(text: string, heading: string): string | undefined {
 }
 
 function normalizeStatus(value: string | undefined): HandoffStatus {
-  const v = value?.trim().toLowerCase();
-  if (v === "success") return "success";
+  const raw = value?.trim() ?? "";
+  const v = raw
+    .replace(/\*\*/g, "")
+    .replace(/[.!]+$/g, "")
+    .trim()
+    .toLowerCase();
+  if (v === "success" || v === "fixed" || v === "ready") return "success";
   if (v === "partial") return "partial";
   if (v === "blocked") return "blocked";
+  if (v.startsWith("success")) return "success";
   return "unknown";
 }
 

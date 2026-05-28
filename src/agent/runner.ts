@@ -7,19 +7,36 @@ import {
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
-import { commitCourseWip, gitCurrentBranch } from "../git/workspace.js";
+import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
+import {
+  commitCourseWip,
+  gitCurrentBranch,
+  gitIsDirty,
+  type CommitResult,
+} from "../git/workspace.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type { StateStore } from "../state/store.js";
 import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
-import { runVerifyCommands } from "../verify/runner.js";
+import {
+  filterVerifyCommandsForServe,
+  runVerifyCommands,
+} from "../verify/runner.js";
 import {
   agentPhaseSucceeded,
   parseHandoff,
   verificationIsStrongEnough,
 } from "./handoff.js";
 import { buildAgentPrompt } from "./prompt.js";
-import { checkoutIssueStack } from "../stack/prep.js";
-import { createGraphiteStackPort } from "../stack/graphite-runner.js";
+import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
+import { drainRunStream } from "./stream-handler.js";
+import {
+  formatAgentError,
+  isSdkCanceledError,
+  safeDisposeAgent,
+} from "./sdk-errors.js";
+import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
+import { Transcript } from "../serve/transcript.js";
+import * as out from "../ui/out.js";
 
 export interface ProcessOptions {
   dryRun?: boolean;
@@ -28,6 +45,7 @@ export interface ProcessOptions {
   skipVerify?: boolean;
   skipCommit?: boolean;
   stack?: StackConfig;
+  epic?: string;
 }
 
 export interface ProcessResult {
@@ -59,43 +77,51 @@ async function recordBranches(
   return branches;
 }
 
-function writeAssistantText(event: {
-  type: string;
-  message?: { content?: Array<{ type: string; text?: string }> };
-  text?: string;
-}): void {
-  if (event.type === "assistant" && event.message?.content) {
-    for (const block of event.message.content) {
-      if (block.type === "text" && block.text) {
-        process.stdout.write(block.text);
-      }
-    }
-  }
-  if (event.type === "thinking" && event.text) {
-    process.stderr.write(event.text);
-  }
-}
-
 export async function runVerifyPhase(
   issue: JiraIssue,
   config: DinnerConfig,
   roots: IssueWorkspaces,
+  options: { gate?: "inner" | "full" } = {},
 ): Promise<{ ok: boolean; error?: string; output: string }> {
   if (!config.requireVerify) {
     return { ok: true, output: "(verify disabled in config)" };
   }
 
-  const commands = resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
+  const gate =
+    options.gate === "full"
+      ? "full"
+      : config.serveVerifyGate === "none"
+        ? "none"
+        : config.serveVerifyGate;
+
+  const all = resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
+  const commands = filterVerifyCommandsForServe(all, gate);
+  if (commands.length === 0 && all.length > 0 && gate === "inner") {
+    return {
+      ok: true,
+      output: `(inner verify gate: skipped ${all.length} outer-tier command(s))`,
+    };
+  }
+  if (commands.length === 0 && gate === "inner") {
+    return {
+      ok: true,
+      output:
+        all.length > 0
+          ? `(quick checks skipped — only slow tests are configured for ${issue.key})`
+          : `(no automated quick checks for ${issue.key} — continuing serve)`,
+    };
+  }
   if (commands.length === 0) {
     return {
       ok: false,
       output: "",
-      error: `No verifyCommands for ${issue.key} (roots: ${roots.keys.join(", ")})`,
+      error: `No verify commands for ${issue.key} (roots: ${roots.keys.join(", ")})`,
     };
   }
 
-  console.log(
-    `\n🔎 Verifying ${issue.key} (${commands.length} command(s) across ${roots.keys.length} root(s))…\n`,
+  out.phase(
+    "verify",
+    `${issue.key} — ${commands.length} command(s), ${roots.keys.length} root(s)`,
   );
   const result = await runVerifyCommands(commands);
   if (!result.ok) {
@@ -162,7 +188,7 @@ export async function verifyIssue(
     commits: rec?.commits,
   });
 
-  console.log(`\n✓ ${issue.key} verified\n`);
+  out.success(`${issue.key} verified`);
   return { issueKey: issue.key, status: "verified" };
 }
 
@@ -181,21 +207,71 @@ export async function processIssue(
   );
   const ws = stateWorkspaceFields(roots);
   const prompt = buildAgentPrompt({ issue, roots, config });
+  const transcript = options.epic
+    ? new Transcript(options.epic, issue.key)
+    : undefined;
+  transcript?.appendLine(`Course start: ${issue.summary}`);
 
+  let branches: Record<string, string> = {};
   if (options.stack && !options.dryRun) {
-    const stackActions = await checkoutIssueStack(
-      issue,
-      config,
-      options.stack,
-      createGraphiteStackPort(),
-    );
-    for (const row of stackActions) {
-      if (row.action === "noop") continue;
-      console.log(`   stack ${row.workspace}: ${row.action} → ${row.branch}`);
+    const clean = await ensureWorkspacesCleanForIssue(config, issue, {
+      label: "stack prep",
+    });
+    if (!clean.ok) {
+      const msg = clean.detail ?? "workspace not clean for stack prep";
+      store.appendResolutionStep(issue.key, `Stack prep blocked: ${msg}`);
+      store.upsert({
+        issueKey: issue.key,
+        summary: issue.summary,
+        status: "error",
+        ...ws,
+        finishedAt: new Date().toISOString(),
+        error: msg,
+        transcriptPath: transcript?.path,
+      });
+      out.error(`${issue.key}: ${msg}`);
+      return { issueKey: issue.key, status: "error", error: msg };
     }
-  }
 
-  const branches = options.dryRun ? {} : await recordBranches(roots);
+    try {
+      const stackActions = await checkoutWithRecovery({
+        issue,
+        config,
+        stack: options.stack,
+        store,
+        apiKey,
+        transcript,
+      });
+      for (const row of stackActions) {
+        if (row.action === "noop") continue;
+        out.info(`stack ${row.workspace}: ${row.action} → ${row.branch}`);
+        transcript?.appendLine(
+          `stack ${row.workspace}: ${row.action} → ${row.branch}`,
+        );
+      }
+      branches = await recordBranches(roots);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err);
+      store.appendResolutionStep(
+        issue.key,
+        `Stack prep failed: ${message.slice(0, 300)}`,
+      );
+      store.upsert({
+        issueKey: issue.key,
+        summary: issue.summary,
+        status: "error",
+        ...ws,
+        finishedAt: new Date().toISOString(),
+        error: message,
+        transcriptPath: transcript?.path,
+      });
+      out.error(`${issue.key}: stack prep failed — ${message}`);
+      return { issueKey: issue.key, status: "error", error: message };
+    }
+  } else if (!options.dryRun) {
+    branches = await recordBranches(roots);
+  }
 
   if (options.dryRun) {
     console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
@@ -210,15 +286,15 @@ export async function processIssue(
     status: "running",
     ...ws,
     branches,
+    transcriptPath: transcript?.path,
     startedAt: new Date().toISOString(),
   });
 
-  console.log(`\n🍽  Serving ${issue.key}: ${issue.summary}`);
-  console.log(`   ${formatWorkspacesLabel(roots)}`);
+  out.courseHeader(issue.key, issue.summary, "running");
+  out.info(formatWorkspacesLabel(roots));
   const local = localAgentOptions(config, roots.cwds);
-  console.log(
-    `   local agent cwd=${JSON.stringify(local.cwd)} (not cloud)\n`,
-  );
+  out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
+  transcript?.appendLine(`agent local cwd=${JSON.stringify(local.cwd)}`);
 
   try {
     const agent = options.resumeAgentId
@@ -235,18 +311,131 @@ export async function processIssue(
 
     try {
       const run = await agent.send(prompt);
-      console.log(`   agentId=${agent.agentId} runId=${run.id}`);
+      out.phase("stream", `agentId=${agent.agentId} runId=${run.id}`);
+      transcript?.appendLine(`agentId=${agent.agentId} runId=${run.id}`);
 
+      let streamCanceled = false;
       if (options.stream !== false) {
-        for await (const event of run.stream()) {
-          writeAssistantText(event as Parameters<typeof writeAssistantText>[0]);
+        const sink = {
+          writeStdout: (t: string) => process.stdout.write(t),
+          writeStderr: (t: string) => process.stderr.write(t),
+          transcript: (t: string) => transcript?.append(t),
+        };
+        const drain = await drainRunStream(run.stream(), sink);
+        streamCanceled = drain.canceled;
+      }
+
+      let result;
+      try {
+        result = await run.wait();
+      } catch (waitErr) {
+        streamCanceled = true;
+        const msg = formatAgentError(waitErr);
+        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
+        const recovery = await runRecoveryAgent({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          kind: "agent_error",
+          detail: msg,
+          transcript,
+          resumeAgentId: agent.agentId,
+        });
+        if (recovery.recovered && recovery.runId) {
+          result = {
+            id: recovery.runId,
+            status: "finished" as const,
+            result: recovery.resultText,
+          };
+        } else {
+          store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "error",
+            ...ws,
+            branches,
+            agentId: agent.agentId,
+            finishedAt: new Date().toISOString(),
+            error: msg,
+            resultPreview: msg.slice(0, 500),
+            transcriptPath: transcript?.path,
+          });
+          return {
+            issueKey: issue.key,
+            status: "error",
+            agentId: agent.agentId,
+            error: msg,
+          };
         }
       }
 
-      const result = await run.wait();
+      if (streamCanceled && result.status !== "error") {
+        const msg = formatAgentError(new Error("canceled"));
+        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
+        const recovery = await runRecoveryAgent({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          kind: "agent_error",
+          detail: msg,
+          transcript,
+          resumeAgentId: agent.agentId,
+        });
+        if (recovery.recovered && recovery.runId) {
+          result = {
+            id: recovery.runId,
+            status: "finished" as const,
+            result: recovery.resultText,
+          };
+        } else {
+          store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "error",
+            ...ws,
+            branches,
+            agentId: agent.agentId,
+            runId: result.id,
+            finishedAt: new Date().toISOString(),
+            error: msg,
+            resultPreview: msg.slice(0, 500),
+            transcriptPath: transcript?.path,
+          });
+          return {
+            issueKey: issue.key,
+            status: "error",
+            agentId: agent.agentId,
+            runId: result.id,
+            error: msg,
+          };
+        }
+      }
 
       if (result.status === "error") {
         const msg = result.result ?? "Run failed without message";
+        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
+        const recovery = await runRecoveryAgent({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          kind: "agent_error",
+          detail: msg,
+          transcript,
+          resumeAgentId: agent.agentId,
+        });
+        if (recovery.recovered && recovery.runId) {
+          result = {
+            id: recovery.runId,
+            status: "finished",
+            result: recovery.resultText,
+          };
+        } else {
         store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
@@ -266,6 +455,7 @@ export async function processIssue(
           runId: result.id,
           error: msg,
         };
+        }
       }
 
       if (result.status === "cancelled") {
@@ -287,11 +477,53 @@ export async function processIssue(
         };
       }
 
-      const text = result.result ?? "";
-      const handoff = parseHandoff(text);
+      let text = result.result ?? "";
+      let handoff = parseHandoff(text);
 
       if (!agentPhaseSucceeded(handoff)) {
         const msg = `Agent finished without acceptable handoff (status=${handoff.status})`;
+        store.appendResolutionStep(issue.key, msg);
+        const recovery = await runRecoveryAgent({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          kind: "handoff",
+          detail: msg,
+          transcript,
+          resumeAgentId: agent.agentId,
+        });
+        if (recovery.recovered && recovery.resultText) {
+          const retryHandoff = parseHandoff(recovery.resultText);
+          if (agentPhaseSucceeded(retryHandoff)) {
+            handoff = retryHandoff;
+            text = recovery.resultText ?? text;
+          } else {
+            store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              ...ws,
+              branches,
+              agentId: recovery.agentId ?? agent.agentId,
+              runId: recovery.runId,
+              handoffStatus: retryHandoff.status,
+              handoffVerification: retryHandoff.verification,
+              finishedAt: new Date().toISOString(),
+              error: msg,
+              resultPreview: recovery.resultText.slice(0, 500),
+              transcriptPath: transcript?.path,
+            });
+            return {
+              issueKey: issue.key,
+              status: "error",
+              agentId: recovery.agentId,
+              runId: recovery.runId,
+              error: msg,
+            };
+          }
+        } else {
         store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
@@ -313,6 +545,7 @@ export async function processIssue(
           runId: result.id,
           error: msg,
         };
+        }
       }
 
       if (
@@ -321,31 +554,60 @@ export async function processIssue(
           requireTests: true,
         })
       ) {
-        console.warn(
-          `   ⚠ Handoff claims "${handoff.verification}" — verify commands are the hard gate.`,
+        out.warn(
+          `Handoff claims "${handoff.verification}" — verify commands are the hard gate`,
         );
       }
 
       let commits: Record<string, string> = {};
       const shouldCommit = config.commitWip && !options.skipCommit;
       if (shouldCommit) {
-        console.log(`\n📦 Committing WIP on story branches…`);
-        const commitResults = await commitCourseWip(
-          issue.key,
-          issue.summary,
-          roots.keys.map((key, i) => ({ key, cwd: roots.cwds[i]! })),
+        commits = await commitCourseWithRecovery({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          transcript,
+          workspaces: roots.keys.map((key, i) => ({
+            key,
+            cwd: roots.cwds[i]!,
+          })),
+        });
+        const workspaces = roots.keys.map((key, i) => ({
+          key,
+          cwd: roots.cwds[i]!,
+        }));
+        const dirtyAfter = await workspacesStillDirty(workspaces);
+        const anyCommitFailed = workspaces.some(
+          (ws) => dirtyAfter && !(commits[ws.key] ?? ""),
         );
-        for (const cr of commitResults) {
-          if (cr.committed) {
-            commits[cr.workspaceKey] = cr.sha ?? "";
-            console.log(
-              `   ${cr.workspaceKey}: ${cr.branch} @ ${cr.sha} — ${cr.message}`,
-            );
-          } else if (cr.error) {
-            console.warn(`   ${cr.workspaceKey}: commit failed — ${cr.error}`);
-          } else {
-            console.log(`   ${cr.workspaceKey}: ${cr.branch} (clean)`);
-          }
+        if (anyCommitFailed) {
+          const msg =
+            "WIP commit failed and working tree is still dirty — cannot advance stack";
+          store.appendResolutionStep(issue.key, msg);
+          store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "error",
+            ...ws,
+            branches,
+            agentId: agent.agentId,
+            runId: result.id,
+            handoffStatus: handoff.status,
+            handoffVerification: handoff.verification,
+            finishedAt: new Date().toISOString(),
+            error: msg,
+            resultPreview: text.slice(0, 500),
+            transcriptPath: transcript?.path,
+          });
+          return {
+            issueKey: issue.key,
+            status: "error",
+            agentId: agent.agentId,
+            runId: result.id,
+            error: msg,
+          };
         }
       }
 
@@ -361,14 +623,15 @@ export async function processIssue(
         handoffStatus: handoff.status,
         handoffVerification: handoff.verification,
         resultPreview: text.slice(0, 500),
+        transcriptPath: transcript?.path,
       });
 
-      console.log(
-        `\n✓ ${issue.key} agent phase (${handoff.status}, ${handoff.verification})\n`,
+      out.success(
+        `${issue.key} agent phase (${handoff.status}, ${handoff.verification})`,
       );
 
       if (options.skipVerify) {
-        console.warn("   ⚠ --skip-verify: not running verify commands");
+        out.warn("--skip-verify: not running verify commands");
         store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
@@ -392,7 +655,42 @@ export async function processIssue(
         };
       }
 
-      const verify = await runVerifyPhase(issue, config, roots);
+      let verify = await runVerifyPhase(issue, config, roots);
+      if (!verify.ok) {
+        store.appendResolutionStep(
+          issue.key,
+          verify.error ?? "Tests failed during verify",
+        );
+        const recovery = await runRecoveryAgent({
+          issue,
+          config,
+          roots,
+          store,
+          apiKey,
+          kind: "verify",
+          detail: verify.error ?? "verify failed",
+          verifyOutput: verify.output,
+          transcript,
+          resumeAgentId: agent.agentId,
+        });
+        if (recovery.recovered) {
+          if (config.commitWip && !options.skipCommit) {
+            commits = await commitCourseWithRecovery({
+              issue,
+              config,
+              roots,
+              store,
+              apiKey,
+              transcript,
+              workspaces: roots.keys.map((key, i) => ({
+                key,
+                cwd: roots.cwds[i]!,
+              })),
+            });
+          }
+          verify = await runVerifyPhase(issue, config, roots);
+        }
+      }
       if (!verify.ok) {
         store.upsert({
           issueKey: issue.key,
@@ -409,8 +707,9 @@ export async function processIssue(
           verifyError: verify.error,
           finishedAt: new Date().toISOString(),
           resultPreview: text.slice(0, 500),
+          transcriptPath: transcript?.path,
         });
-        console.error(`\n✗ ${issue.key} verify failed: ${verify.error}\n`);
+        out.error(`${issue.key} verify failed: ${verify.error}`);
         return {
           issueKey: issue.key,
           status: "agent_complete",
@@ -437,7 +736,7 @@ export async function processIssue(
         resultPreview: text.slice(0, 500),
       });
 
-      console.log(`\n✓ ${issue.key} verified\n`);
+      out.success(`${issue.key} verified`);
       return {
         issueKey: issue.key,
         status: "verified",
@@ -446,16 +745,19 @@ export async function processIssue(
         result: text,
       };
     } finally {
-      await agent[Symbol.asyncDispose]();
+      await safeDisposeAgent(agent);
     }
   } catch (err) {
-    const message =
-      err instanceof CursorAgentError
+    const message = isSdkCanceledError(err)
+      ? formatAgentError(err)
+      : err instanceof CursorAgentError
         ? `${err.message} (retryable=${err.isRetryable})`
         : err instanceof Error
           ? err.message
           : String(err);
 
+    transcript?.appendBlock("fatal error", message);
+    store.appendResolutionStep(issue.key, message.slice(0, 300));
     store.upsert({
       issueKey: issue.key,
       summary: issue.summary,
@@ -464,10 +766,117 @@ export async function processIssue(
       branches,
       finishedAt: new Date().toISOString(),
       error: message,
+      transcriptPath: transcript?.path,
     });
 
+    out.error(`${issue.key}: ${message}`);
     return { issueKey: issue.key, status: "error", error: message };
   }
+}
+
+async function workspacesStillDirty(
+  workspaces: Array<{ key: string; cwd: string }>,
+): Promise<boolean> {
+  for (const ws of workspaces) {
+    if (await gitIsDirty(ws.cwd)) return true;
+  }
+  return false;
+}
+
+function commitsFromResults(results: CommitResult[]): Record<string, string> {
+  const commits: Record<string, string> = {};
+  for (const cr of results) {
+    if (cr.committed && cr.sha) commits[cr.workspaceKey] = cr.sha;
+  }
+  return commits;
+}
+
+async function logCommitResults(results: CommitResult[]): Promise<void> {
+  for (const cr of results) {
+    if (cr.committed) {
+      out.success(`${cr.workspaceKey}: ${cr.branch} @ ${cr.sha}`);
+    } else if (cr.error) {
+      out.warn(`${cr.workspaceKey}: commit failed — ${cr.error}`);
+    } else {
+      out.info(`${cr.workspaceKey}: ${cr.branch} (clean)`);
+    }
+  }
+}
+
+async function commitCourseWithRecovery(options: {
+  issue: JiraIssue;
+  config: DinnerConfig;
+  roots: IssueWorkspaces;
+  store: StateStore;
+  apiKey: string;
+  transcript?: Transcript;
+  workspaces: Array<{ key: string; cwd: string }>;
+}): Promise<Record<string, string>> {
+  out.phase("commit", "WIP on story branches");
+
+  let results = await commitCourseWip(
+    options.issue.key,
+    options.issue.summary,
+    options.workspaces,
+  );
+  await logCommitResults(results);
+
+  if (!(await workspacesStillDirty(options.workspaces))) {
+    return commitsFromResults(results);
+  }
+
+  const failed = results.filter((r) => r.error || !(r.committed && r.sha));
+  if (failed.length === 0) {
+    return commitsFromResults(results);
+  }
+
+  const detail = failed
+    .map((r) => `${r.workspaceKey}: ${r.error ?? "dirty after commit attempt"}`)
+    .join("; ");
+  options.store.appendResolutionStep(
+    options.issue.key,
+    `Commit failed: ${detail}`,
+  );
+  const recovery = await runRecoveryAgent({
+    issue: options.issue,
+    config: options.config,
+    roots: options.roots,
+    store: options.store,
+    apiKey: options.apiKey,
+    kind: "commit",
+    detail,
+    transcript: options.transcript,
+  });
+
+  if (recovery.recovered) {
+    results = await commitCourseWip(
+      options.issue.key,
+      options.issue.summary,
+      options.workspaces,
+    );
+    await logCommitResults(results);
+  }
+
+  if (await workspacesStillDirty(options.workspaces)) {
+    const stashResults = await recoverDirtyWorkspaces(
+      options.issue.key,
+      options.issue.summary,
+      options.workspaces,
+    );
+    for (const sr of stashResults) {
+      if (sr.ok) {
+        out.warn(
+          `${sr.cwd}: auto-stashed (${sr.action}) so stack prep can continue`,
+        );
+        options.store.appendResolutionStep(
+          options.issue.key,
+          `Auto-stash ${sr.action} on ${sr.cwd}`,
+        );
+      }
+    }
+  }
+
+  return commitsFromResults(results);
 }
 
 /** Topological order: blockers before dependents. */

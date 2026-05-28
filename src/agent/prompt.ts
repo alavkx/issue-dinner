@@ -47,9 +47,13 @@ ${formatWorkspaceSection(roots)}
 ## Description
 ${issue.description}
 
-## Verify gate (issue-dinner runs these exactly after your handoff)
+## Verify gate (issue-dinner runs after your handoff)
 
-Place tests and code so these commands pass:
+**Inner loop (blocks the menu):** fast commands — unit tests, typecheck. Run these locally while building.
+
+**Outer loop (CI / manual):** integration/e2e commands — issue-dinner does not block the menu on these when \`serveVerifyGate\` is \`inner\` (default).
+
+Place tests and code so inner verify passes:
 
 ${verifySection}
 
@@ -71,7 +75,9 @@ When multiple roots are listed, implement the slice **in repo order** (e.g. Open
 - Follow ADRs and CONTEXT docs; do not re-debate settled design.
 - No placeholder TODOs or \`not implemented\` throws in production paths.
 - Run the verify commands above plus relevant existing suites in **each** root you touch before finishing.
-- Do **not** git commit or push — issue-dinner commits WIP on the story branch after your run.
+- Leave all implementation changes **on disk** on the story branch. Do **not** push.
+- issue-dinner runs \`git add -A\` and \`git commit\` after your handoff (pre-commit hooks must pass).
+- If hooks fail, fix them before finishing — uncommitted WIP blocks the next story in the stack.
 
 ## Final message (required handoff)
 

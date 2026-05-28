@@ -1,6 +1,7 @@
 import {
   processIssue,
   sortByDependencies,
+  verifyIssue,
 } from "../agent/runner.js";
 import { cursorApiKey } from "../env.js";
 import {
@@ -13,7 +14,13 @@ import { findConfigPath } from "../config.js";
 import { ensureAcli, fetchIssue, listEpicChildren } from "../jira/acli.js";
 import { resolveCliExecutable } from "../paths.js";
 import { ServeLogger } from "../serve/log.js";
+import type { ServeHaltInfo } from "../serve/failures.js";
+import { menuOrderBlocks } from "../serve/menu-gate.js";
 import { printServeSummary } from "../serve/summary.js";
+import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
+import { formatAgentError } from "../agent/sdk-errors.js";
+import { setServeShutdownHandler } from "../runtime/guards.js";
+import * as out from "../ui/out.js";
 import { filterMenuIssues, parseKeyList } from "../serve/filter.js";
 import { createGraphiteStackPort } from "../stack/graphite-runner.js";
 import { prepEpicStack } from "../stack/prep.js";
@@ -84,6 +91,7 @@ async function runMealPreflight(
     config: meal.machine,
     stack: meal.stack,
     menuIssues: menu,
+    store: meal.store,
     ...options,
   });
   console.log(formatPreflightReport(report));
@@ -168,6 +176,14 @@ export async function runMealArgv(
         if (rec?.error && st === "error") {
           console.log(`         error: ${rec.error.slice(0, 200)}`);
         }
+        if (rec?.resolutionSteps?.length) {
+          for (const step of rec.resolutionSteps.slice(-4)) {
+            console.log(`         → ${step}`);
+          }
+        }
+        if (rec?.transcriptPath && verbose) {
+          console.log(`         transcript: ${rec.transcriptPath}`);
+        }
       }
       return;
     }
@@ -226,7 +242,7 @@ export async function runMealArgv(
         }),
       );
       const dryRun = hasFlag(args, "--dry-run");
-      const skipDone = hasFlag(args, "--skip-done");
+      const skipDone = !hasFlag(args, "--no-skip-done");
       const force = hasFlag(args, "--force");
       const continueOnError = hasFlag(args, "--continue-on-error");
       const skipVerify = hasFlag(args, "--skip-verify");
@@ -242,6 +258,7 @@ export async function runMealArgv(
           config: meal.machine,
           stack: meal.stack,
           menuIssues: issues,
+          store: meal.store,
           checkGraphite: false,
           checkTmux: false,
         });
@@ -250,14 +267,32 @@ export async function runMealArgv(
         printDryRunMenuPlan(meal, issues);
       }
 
-      const recovered = meal.store.recoverStaleRunning();
-      if (recovered.length > 0) {
-        console.log(
-          `Recovered stale running: ${recovered.join(", ")}\n`,
-        );
+      const recoverStale = (): string[] => {
+        const keys = meal.store.recoverStaleRunning();
+        if (keys.length > 0) {
+          console.log(`Recovered stale running: ${keys.join(", ")}\n`);
+        }
+        return keys;
+      };
+
+      recoverStale();
+
+      setServeShutdownHandler(() => {
+        recoverStale();
+      });
+
+      let sigintHandler: (() => void) | undefined;
+      if (!dryRun) {
+        sigintHandler = () => {
+          out.warn("Interrupted — marking in-flight courses and exiting");
+          recoverStale();
+          process.exitCode = 130;
+          process.exit(130);
+        };
+        process.once("SIGINT", sigintHandler);
       }
 
-      console.log(`Menu for epic ${meal.epic} (${issues.length} courses)\n`);
+      out.banner(`Issue dinner — ${meal.epic} (${issues.length} courses)`);
 
       let logger: ServeLogger | undefined;
       if (!dryRun) {
@@ -269,13 +304,33 @@ export async function runMealArgv(
       let failures = 0;
       const held: Array<{ key: string; reason: string }> = [];
       const skipped: string[] = [];
+      const skippedSet = new Set<string>();
+      let halt: ServeHaltInfo | undefined;
 
       try {
-        for (const issue of issues) {
+        for (let courseIndex = 0; courseIndex < issues.length; courseIndex++) {
+          const issue = issues[courseIndex]!;
           if (skipDone && meal.store.isVerified(issue.key)) {
-            console.log(`skip ${issue.key} (verified)`);
+            out.skipCourse(issue.key, "verified");
             skipped.push(issue.key);
+            skippedSet.add(issue.key);
             continue;
+          }
+          if (!force && !dryRun) {
+            const orderGate = menuOrderBlocks(
+              meal.store,
+              issues,
+              courseIndex,
+              skippedSet,
+            );
+            if (!orderGate.ok) {
+              out.holdCourse(issue.key, orderGate.reason ?? "blocked");
+              held.push({
+                key: issue.key,
+                reason: orderGate.reason ?? "blocked",
+              });
+              continue;
+            }
           }
           if (!force && !dryRun) {
             const gate = meal.store.canProcess(
@@ -283,7 +338,7 @@ export async function runMealArgv(
               issue.parsed.blockedBy,
             );
             if (!gate.ok) {
-              console.log(`hold ${issue.key}: ${gate.reason}`);
+              out.holdCourse(issue.key, gate.reason ?? "blocked");
               held.push({ key: issue.key, reason: gate.reason ?? "blocked" });
               continue;
             }
@@ -310,29 +365,106 @@ export async function runMealArgv(
             continue;
           }
 
-          const result = await processIssue(
-            issue,
-            meal.machine,
-            meal.store,
-            cursorApiKey(),
-            { skipVerify, stack: meal.stack },
-          );
+          const prior = meal.store.get(issue.key);
+          if (prior?.status === "agent_complete" && !skipVerify) {
+            out.info(`${issue.key}: retrying verify (previous agent_complete)`);
+            const retry = await verifyIssue(
+              issue,
+              meal.machine,
+              meal.store,
+            );
+            if (retry.status === "verified") {
+              continue;
+            }
+          }
+
+          let result;
+          try {
+            result = await processIssue(
+              issue,
+              meal.machine,
+              meal.store,
+              cursorApiKey(),
+              { skipVerify, stack: meal.stack, epic: meal.epic },
+            );
+          } catch (err) {
+            const message = formatAgentError(err);
+            failures += 1;
+            meal.store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              error: message,
+              finishedAt: new Date().toISOString(),
+            });
+            halt = {
+              issueKey: issue.key,
+              summary: issue.summary,
+              reason: message,
+            };
+            out.error(`${issue.key} crashed: ${message}`);
+            process.exitCode = 2;
+            break;
+          }
+
           if (result.status === "error") {
             failures += 1;
-            console.error(`✗ ${issue.key} failed`);
+            halt = {
+              issueKey: issue.key,
+              summary: issue.summary,
+              reason: result.error ?? "course failed",
+            };
+            out.error(`✗ ${issue.key} failed — ${halt.reason}`);
+            process.exitCode = 2;
+            if (!continueOnError) break;
+            continue;
+          }
+
+          if (result.status === "agent_complete") {
+            failures += 1;
+            halt = {
+              issueKey: issue.key,
+              summary: issue.summary,
+              reason: result.error ?? "inner verify failed",
+            };
+            out.error(
+              `${issue.key} agent complete — inner verify failed (${result.error ?? "see log"})`,
+            );
             if (!continueOnError) {
               process.exitCode = 2;
               break;
             }
-          } else if (result.status === "agent_complete") {
+          }
+
+          const clean = await ensureWorkspacesCleanForIssue(
+            meal.machine,
+            issue,
+            { label: "before next course" },
+          );
+          if (!clean.ok) {
             failures += 1;
-            console.warn(
-              `⚠ ${issue.key} agent complete — verify failed (continuing)`,
+            const reason =
+              clean.detail ??
+              "dirty workspace after course — cannot advance stack";
+            halt = {
+              issueKey: issue.key,
+              summary: issue.summary,
+              reason,
+            };
+            out.error(
+              `${issue.key} left repo dirty — halting menu (fix git, then re-serve)`,
             );
+            process.exitCode = 2;
+            break;
           }
         }
       } finally {
+        if (sigintHandler) {
+          process.off("SIGINT", sigintHandler);
+        }
+        setServeShutdownHandler(undefined);
         if (!dryRun) {
+          recoverStale();
           printServeSummary({
             epic: meal.epic,
             stack: meal.stack,
@@ -341,6 +473,7 @@ export async function runMealArgv(
             held,
             skipped,
             logPath: logger?.logPath,
+            halt,
           });
           logger?.close();
         }
@@ -398,7 +531,7 @@ export async function runMealArgv(
       }
 
       const inner = buildServeInvocation(meal.epic, resolvedConfigPath, {
-        continueOnError: !hasFlag(args, "--no-continue-on-error"),
+        continueOnError: hasFlag(args, "--continue-on-error"),
         skipDone: !hasFlag(args, "--no-skip-done"),
         exclude,
         only: flagValue(args, "--only"),
@@ -427,6 +560,7 @@ export async function runMealArgv(
         session: flagValue(args, "--session") ?? "dinner",
         innerCommand: inner,
         apiKey: cursorApiKey(),
+        epic: meal.epic,
         detach: hasFlag(args, "--detach"),
       });
       return;

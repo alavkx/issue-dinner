@@ -3,13 +3,23 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
+const VerifyTierSchema = z.enum(["inner", "outer"]);
+
 const VerifyCommandSchema = z.object({
   name: z.string(),
   command: z.string(),
   args: z.array(z.string()),
   /** Workspace key for cwd when running this command (multi-root verify). */
   workspace: z.string().optional(),
+  /**
+   * inner — fast gate during serve (unit tests, typecheck).
+   * outer — full/integration checks; run via `verify` command or CI, not inner loop.
+   */
+  tier: VerifyTierSchema.optional(),
 });
+
+export type VerifyTier = z.infer<typeof VerifyTierSchema>;
+export type ServeVerifyGate = "inner" | "full" | "none";
 
 const SettingSourceSchema = z.enum(["project", "user", "team"]);
 
@@ -23,6 +33,13 @@ const MachineConfigSchema = z.object({
   issueWorkspaces: z.record(z.array(z.string())).optional(),
   settingSources: z.array(SettingSourceSchema).default(["project"]),
   requireVerify: z.boolean().default(true),
+  /**
+   * Which verify command tiers block serve progression.
+   * inner — only `tier: inner` (or untagged) commands; outer/CI checks deferred.
+   * full — all configured verify commands (slow integration included).
+   * none — same as --skip-verify during serve.
+   */
+  serveVerifyGate: z.enum(["inner", "full", "none"]).default("inner"),
   requireHandoffTests: z.boolean().default(true),
   verifyCommands: z.record(z.array(VerifyCommandSchema)).optional(),
   issueVerifyCommands: z.record(z.array(VerifyCommandSchema)).optional(),
@@ -35,6 +52,13 @@ const MachineConfigSchema = z.object({
   blockerPolicy: z.enum(["strict", "agent_complete"]).default("strict"),
   /** Commit WIP in each workspace after successful agent phase. */
   commitWip: z.boolean().default(true),
+  /** SDK recovery passes per failure (stack/verify/handoff) before giving up. */
+  recoveryAttempts: z.number().int().min(0).max(5).default(2),
+  /**
+   * Recovery agents write to transcript only (no stdout stream).
+   * Set false for full recovery stream in the terminal.
+   */
+  quietRecovery: z.boolean().default(true),
 });
 
 export type MachineConfig = z.infer<typeof MachineConfigSchema>;

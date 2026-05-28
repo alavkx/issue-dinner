@@ -2,12 +2,15 @@
   "model": "composer-2.5",
   "settingSources": ["project"],
   "requireVerify": true,
+  "serveVerifyGate": "inner",
   "requireHandoffTests": true,
   "stackAuthor": "alavoie",
   "stackBaseOverride": "alavoie/cpd-635-user-event-log",
   "graphiteTrunk": "main",
   "blockerPolicy": "strict",
   "commitWip": true,
+  "recoveryAttempts": 2,
+  "quietRecovery": true,
   "workspaces": {
     "backend": "/Users/alavoie/code/fileservice2",
     "frontend": "/Users/alavoie/code/istari-frontend",
@@ -28,15 +31,30 @@
     "backend": [
       {
         "name": "events-unit",
+        "tier": "inner",
         "command": "poetry",
         "args": [
           "run",
           "pytest",
           "tests/v3/unit_test/test_user_event_service.py",
-          "tests/v3/integration/test_event_routes.py",
+          "tests/v3/unit_test/test_job_status_patch_builder.py",
+          "tests/v3/unit_test/test_user_event_task.py",
           "-q",
           "--tb=short"
         ]
+      },
+      {
+        "name": "events-integration",
+        "tier": "outer",
+        "command": "./scripts/verify-user-events.sh",
+        "args": []
+      }
+    ],
+    "frontend": [
+      {
+        "name": "events-frontend",
+        "command": "npm",
+        "args": ["run", "test", "--", "src/events/"]
       }
     ],
     "schemas": [
@@ -51,21 +69,65 @@
     "CPD-636": [
       {
         "name": "events-unit",
+        "tier": "inner",
         "command": "poetry",
         "args": [
           "run",
           "pytest",
           "tests/v3/unit_test/test_user_event_service.py",
-          "tests/v3/integration/test_event_routes.py",
           "-q",
           "--tb=short"
         ],
         "workspace": "backend"
+      },
+      {
+        "name": "events-integration",
+        "tier": "outer",
+        "command": "./scripts/verify-user-events.sh",
+        "args": [],
+        "workspace": "backend"
+      },
+      {
+        "name": "events-frontend",
+        "command": "npm",
+        "args": ["run", "test", "--", "src/events/apply-entity-patch.test.ts"],
+        "workspace": "frontend"
+      }
+    ],
+    "CPD-639": [
+      {
+        "name": "events-frontend",
+        "command": "npm",
+        "args": ["run", "test", "--", "src/events/"],
+        "workspace": "frontend"
+      }
+    ],
+    "CPD-641": [
+      {
+        "name": "frontend-typecheck",
+        "command": "npm",
+        "args": ["run", "typecheck"],
+        "workspace": "frontend"
       }
     ],
     "CPD-638": [
       {
-        "name": "notifications-regression",
+        "name": "notifications-unit",
+        "tier": "inner",
+        "command": "poetry",
+        "args": [
+          "run",
+          "pytest",
+          "tests/v3/unit_test/test_notification_service.py",
+          "tests/v3/unit_test/test_notification_task.py",
+          "-q",
+          "--tb=short"
+        ],
+        "workspace": "backend"
+      },
+      {
+        "name": "notifications-integration",
+        "tier": "outer",
         "command": "poetry",
         "args": [
           "run",
@@ -73,7 +135,8 @@
           "tests/v3/integration/test_notification_routes.py",
           "-q",
           "--tb=short"
-        ]
+        ],
+        "workspace": "backend"
       }
     ]
   }

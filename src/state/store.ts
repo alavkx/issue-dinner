@@ -31,6 +31,9 @@ export interface IssueRunRecord {
   branches?: Record<string, string>;
   /** workspace key → short commit sha after WIP commit */
   commits?: Record<string, string>;
+  /** Human-readable recovery / interruption trail for status and resume */
+  resolutionSteps?: string[];
+  transcriptPath?: string;
 }
 
 export interface DinnerState {
@@ -86,7 +89,27 @@ export class StateStore {
   }
 
   upsert(record: IssueRunRecord): void {
+    const prev = this.data.issues[record.issueKey];
+    if (prev?.resolutionSteps && record.resolutionSteps === undefined) {
+      record = { ...record, resolutionSteps: prev.resolutionSteps };
+    }
     this.data.issues[record.issueKey] = record;
+    this.save();
+  }
+
+  appendResolutionStep(issueKey: string, step: string): void {
+    const rec = this.data.issues[issueKey];
+    const steps = [...(rec?.resolutionSteps ?? []), step];
+    if (rec) {
+      this.data.issues[issueKey] = { ...rec, resolutionSteps: steps };
+    } else {
+      this.data.issues[issueKey] = {
+        issueKey,
+        summary: issueKey,
+        status: "pending",
+        resolutionSteps: steps,
+      };
+    }
     this.save();
   }
 
@@ -124,10 +147,17 @@ export class StateStore {
     const recovered: string[] = [];
     for (const [key, rec] of Object.entries(this.data.issues)) {
       if (rec.status === "running") {
+        const steps = [
+          ...(rec.resolutionSteps ?? []),
+          "Serve interrupted while issue was running (crash, Ctrl+C, or agent stall)",
+          `Resume: issue-dinner ${this.data.epic ?? "EPIC"} serve --only ${key}` +
+            `  # or cook ${key} --force`,
+        ];
         this.data.issues[key] = {
           ...rec,
           status: "error",
           error: "Recovered stale running state (previous serve interrupted)",
+          resolutionSteps: steps,
           finishedAt: new Date().toISOString(),
         };
         recovered.push(key);

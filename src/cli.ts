@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { installProcessGuards } from "./runtime/guards.js";
 import { Command, CommanderError } from "commander";
+
+installProcessGuards();
 import { verifyIssue } from "./agent/runner.js";
 import { loadMachineConfig } from "./config.js";
 import { parseTopLevelArgv } from "./epic/parse-argv.js";

@@ -4,10 +4,17 @@ import {
   resolveIssueWorkspaces,
 } from "../config/workspaces.js";
 import { cursorApiKeyEnvName } from "../env.js";
+import { recoverDirtyWorkspace } from "../git/recover-workspace.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import { commandExists, runCommand } from "../util/exec.js";
 import { validateVerifyCommands } from "../verify/validate.js";
+import type { StateStore } from "../state/store.js";
+import {
+  explainPreflightFailure,
+  type PreflightExplanation,
+} from "../serve/explain.js";
+import { fg } from "../ui/theme.js";
 
 export interface PreflightIssue {
   ok: boolean;
@@ -29,6 +36,43 @@ function push(
   issues.push({ ok, message, fix });
 }
 
+/** Issue whose WIP likely owns a dirty workspace (resume / in-progress). */
+function recoveryIssueForWorkspace(
+  workspaceKey: string,
+  menuIssues: JiraIssue[],
+  config: DinnerConfig,
+  store?: StateStore,
+): JiraIssue | undefined {
+  const touches = (issue: JiraIssue) =>
+    resolveIssueWorkspaces(
+      config,
+      issue.key,
+      issue.description,
+      issue.summary,
+    ).keys.includes(workspaceKey);
+
+  const agentComplete = menuIssues.find(
+    (i) =>
+      touches(i) && store?.get(i.key)?.status === "agent_complete",
+  );
+  if (agentComplete) return agentComplete;
+
+  const running = menuIssues.find(
+    (i) => touches(i) && store?.get(i.key)?.status === "running",
+  );
+  if (running) return running;
+
+  return menuIssues.find(touches);
+}
+
+function shouldSkipVerifyPathsForIssue(
+  issueKey: string,
+  store?: StateStore,
+): boolean {
+  const status = store?.get(issueKey)?.status;
+  return status === "verified" || status === "finished" || status === "agent_complete";
+}
+
 export async function runPreflight(options: {
   config: DinnerConfig;
   stack: StackConfig;
@@ -37,6 +81,8 @@ export async function runPreflight(options: {
   checkGraphite?: boolean;
   checkTmux?: boolean;
   validateVerify?: boolean;
+  /** Skip verify path checks for courses already marked verified (wrong branch on disk). */
+  store?: StateStore;
 }): Promise<PreflightReport> {
   const issues: PreflightIssue[] = [];
   const apiEnv = cursorApiKeyEnvName();
@@ -99,15 +145,39 @@ export async function runPreflight(options: {
       const { stdout } = await runCommand("git", ["status", "--porcelain"], {
         cwd,
       });
-      const clean = stdout.trim().length === 0;
-      push(
-        issues,
-        clean,
-        `${key}: working tree clean`,
-        clean
-          ? undefined
-          : `cd ${cwd} && git stash -u  # or commit before dinner`,
-      );
+      let clean = stdout.trim().length === 0;
+      if (!clean) {
+        const issue = recoveryIssueForWorkspace(
+          key,
+          options.menuIssues,
+          options.config,
+          options.store,
+        );
+        if (issue) {
+          const recovered = await recoverDirtyWorkspace(
+            key,
+            cwd,
+            issue.key,
+            issue.summary,
+          );
+          if (recovered.ok) {
+            clean = true;
+            push(
+              issues,
+              true,
+              `${key}: recovered dirty tree (${recovered.action}${recovered.detail ? ` @ ${recovered.detail}` : ""})`,
+            );
+            continue;
+          }
+        }
+        push(
+          issues,
+          true,
+          `${key}: working tree has uncommitted changes (dinner will recover at stack prep)`,
+        );
+        continue;
+      }
+      push(issues, true, `${key}: working tree clean`);
     } catch {
       push(issues, false, `${key}: git status failed`, `Check ${cwd} is a git repo`);
     }
@@ -135,7 +205,16 @@ export async function runPreflight(options: {
   }
 
   if (options.validateVerify !== false) {
+    const gate = options.config.serveVerifyGate ?? "inner";
     for (const issue of options.menuIssues) {
+      if (shouldSkipVerifyPathsForIssue(issue.key, options.store)) {
+        push(
+          issues,
+          true,
+          `${issue.key}: verify paths skipped (${options.store?.get(issue.key)?.status ?? "done"} in dinner state)`,
+        );
+        continue;
+      }
       const roots = resolveIssueWorkspaces(
         options.config,
         issue.key,
@@ -146,6 +225,7 @@ export async function runPreflight(options: {
         options.config,
         issue.key,
         roots.keys,
+        { gate },
       );
       for (const v of validation) {
         push(issues, v.ok, `${issue.key}: ${v.message}`, v.fix);
@@ -157,21 +237,52 @@ export async function runPreflight(options: {
   return { ok, issues };
 }
 
+function issueKeyFromPreflightMessage(message: string): string | undefined {
+  const m = message.match(/^(CPD-\d+):/);
+  return m?.[1];
+}
+
 export function formatPreflightReport(report: PreflightReport): string {
-  const lines = ["Preflight checks:", ""];
+  const lines = [fg.bold("Preflight checks:"), ""];
+  const failures: PreflightExplanation[] = [];
+
   for (const item of report.issues) {
-    const mark = item.ok ? "✓" : "✗";
+    const mark = item.ok ? fg.green("✓") : fg.red("✗");
     lines.push(`${mark} ${item.message}`);
-    if (!item.ok && item.fix) lines.push(`  → ${item.fix}`);
+    if (!item.ok) {
+      const explained = explainPreflightFailure(
+        item.message,
+        item.fix,
+        issueKeyFromPreflightMessage(item.message),
+      );
+      failures.push(explained);
+      lines.push(fg.yellow(`  Problem: ${explained.summary}`));
+      for (const step of explained.steps) {
+        lines.push(fg.yellow(`    → ${step}`));
+      }
+    }
   }
+
   if (!report.ok) {
     lines.push("");
-    lines.push("Fix the items above, then re-run launch.");
+    lines.push(fg.bold(fg.red("Cannot start serve until the ✗ items above are fixed.")));
+    if (failures.length === 1) {
+      lines.push(fg.red(`Next step: ${failures[0]!.steps[0]}`));
+    }
   }
   return lines.join("\n");
 }
 
 export function assertPreflight(report: PreflightReport): void {
   if (report.ok) return;
-  throw new Error(formatPreflightReport(report));
+  const first = report.issues.find((i) => !i.ok);
+  const explained = first
+    ? explainPreflightFailure(
+        first.message,
+        first.fix,
+        issueKeyFromPreflightMessage(first.message),
+      )
+    : undefined;
+  const hint = explained?.steps[0] ?? "See preflight report above.";
+  throw new Error(`Preflight blocked serve. ${hint}`);
 }
