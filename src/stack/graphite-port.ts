@@ -1,18 +1,56 @@
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Effect from "effect/Effect";
 import type { RepoStackStep } from "./plan.js";
 
 /** Git + Graphite operations used by stack prep (mockable in tests). */
 export interface GraphiteStackPort {
-  branchExists(cwd: string, branch: string): Promise<boolean>;
-  currentBranch(cwd: string): Promise<string>;
-  isWorkingTreeClean(cwd: string): Promise<boolean>;
-  checkoutBranch(cwd: string, branch: string): Promise<void>;
+  branchExists(
+    cwd: string,
+    branch: string,
+  ): Effect.Effect<boolean, never, CommandExecutor.CommandExecutor>;
+  currentBranch(
+    cwd: string,
+  ): Effect.Effect<
+    string,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  isWorkingTreeClean(
+    cwd: string,
+  ): Effect.Effect<
+    boolean,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  checkoutBranch(
+    cwd: string,
+    branch: string,
+  ): Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
   /** Register branch with Graphite (no-op if already tracked). */
-  trackBranch(cwd: string, branch: string, parent: string): Promise<void>;
+  trackBranch(
+    cwd: string,
+    branch: string,
+    parent: string,
+  ): Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
   createStackedBranch(
     cwd: string,
     branch: string,
     parent: string,
-  ): Promise<void>;
+  ): Effect.Effect<
+    void,
+    | Error
+    | import("@effect/platform/Error").PlatformError
+    | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
 }
 
 export interface EnsureStackResult {
@@ -20,23 +58,30 @@ export interface EnsureStackResult {
   action: "noop" | "checkout" | "create";
 }
 
-export async function ensureStackStep(
+export const ensureStackStep = (
   cwd: string,
   step: RepoStackStep,
   port: GraphiteStackPort,
-): Promise<EnsureStackResult> {
-  if ((await port.currentBranch(cwd)) === step.branch) {
-    return { branch: step.branch, action: "noop" };
-  }
-  if (!(await port.isWorkingTreeClean(cwd))) {
-    throw new Error(
-      `${cwd}: working tree is dirty — commit, stash, or clean before stack prep`,
-    );
-  }
-  if (await port.branchExists(cwd, step.branch)) {
-    await port.checkoutBranch(cwd, step.branch);
-    return { branch: step.branch, action: "checkout" };
-  }
-  await port.createStackedBranch(cwd, step.branch, step.parent);
-  return { branch: step.branch, action: "create" };
-}
+): Effect.Effect<
+  EnsureStackResult,
+  Error,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    if ((yield* port.currentBranch(cwd)) === step.branch) {
+      return { branch: step.branch, action: "noop" as const };
+    }
+    if (!(yield* port.isWorkingTreeClean(cwd))) {
+      return yield* Effect.fail(
+        new Error(
+          `${cwd}: working tree is dirty — commit, stash, or clean before stack prep`,
+        ),
+      );
+    }
+    if (yield* port.branchExists(cwd, step.branch)) {
+      yield* port.checkoutBranch(cwd, step.branch);
+      return { branch: step.branch, action: "checkout" as const };
+    }
+    yield* port.createStackedBranch(cwd, step.branch, step.parent);
+    return { branch: step.branch, action: "create" as const };
+  });

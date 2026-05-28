@@ -267,16 +267,12 @@ export const checkoutWithRecovery = (options: {
     const port = createGraphiteStackPort();
 
     const checkout = () =>
-      Effect.tryPromise({
-        try: () =>
-          checkoutIssueStack(
-            options.issue,
-            options.config,
-            options.stack,
-            port,
-          ),
-        catch: (err) => err,
-      });
+      checkoutIssueStack(
+        options.issue,
+        options.config,
+        options.stack,
+        port,
+      );
 
     const first = yield* checkout().pipe(
       Effect.catchAll((err) =>

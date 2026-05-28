@@ -243,16 +243,12 @@ const runMealWithStore = (
             validateVerify: false,
           });
         }
-        const summary = yield* Effect.tryPromise({
-          try: () =>
-            prepEpicStack(
-              issues,
-              meal.machine,
-              meal.stack,
-              createGraphiteStackPort(),
-            ),
-          catch: (err) => err,
-        });
+        const summary = yield* prepEpicStack(
+          issues,
+          meal.machine,
+          meal.stack,
+          createGraphiteStackPort(),
+        );
         for (const row of summary) {
           console.log(
             `${row.workspace}  ${row.issueKey}  ${row.action.padEnd(8)}  ${row.branch}`,
@@ -534,16 +530,12 @@ const runMealWithStore = (
             );
           }
           console.log(`Preparing Graphite stacks for ${meal.epic}…`);
-          yield* Effect.tryPromise({
-            try: () =>
-              prepEpicStack(
-                issues,
-                meal.machine,
-                meal.stack,
-                createGraphiteStackPort(),
-              ),
-            catch: (err) => err,
-          });
+          yield* prepEpicStack(
+            issues,
+            meal.machine,
+            meal.stack,
+            createGraphiteStackPort(),
+          );
         } else if (dryRun && !noPrep) {
           const plans = buildEpicStackPlans(
             issues,
