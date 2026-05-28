@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import type { DinnerConfig } from "../config.js";
 import { resolveIssueWorkspaces } from "../config/workspaces.js";
 import { cursorApiKeyEnvName } from "../env.js";
@@ -13,8 +14,9 @@ import {
   type PreflightExplanation,
 } from "../serve/explain.js";
 import { fg } from "../ui/theme.js";
-import * as Effect from "effect/Effect";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+
+type PlatformError = import("@effect/platform/Error").PlatformError;
 
 export interface PreflightIssue {
   ok: boolean;
@@ -96,8 +98,8 @@ export const runPreflight = (options: {
   validateVerify?: boolean;
 }): Effect.Effect<
   PreflightReport,
-  never,
-  StateStore | CommandExecutor.CommandExecutor
+  PlatformError,
+  StateStore | CommandExecutor.CommandExecutor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -148,8 +150,11 @@ export const runPreflight = (options: {
       );
     }
 
-    for (const [key, cwd] of Object.entries(options.config.workspaces)) {
-      const exists = existsSync(cwd);
+    for (const [key, cwd] of Object.entries(options.config.workspaces) as Array<
+      [string, string]
+    >) {
+      const fs = yield* FileSystem.FileSystem;
+      const exists = yield* fs.exists(cwd);
       push(
         issues,
         exists,
@@ -211,8 +216,11 @@ export const runPreflight = (options: {
     }
 
     if (options.checkGraphite !== false && (yield* commandExists("gt"))) {
-      for (const [key, cwd] of Object.entries(options.config.workspaces)) {
-        if (!existsSync(cwd)) continue;
+      const fs = yield* FileSystem.FileSystem;
+      for (const [key, cwd] of Object.entries(options.config.workspaces) as Array<
+      [string, string]
+    >) {
+        if (!(yield* fs.exists(cwd))) continue;
         const gtOutcome = yield* Effect.either(
           runCommand("gt", ["log", "short", "--cwd", cwd], { cwd }),
         );

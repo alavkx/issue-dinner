@@ -103,8 +103,8 @@ export const runVerifyPhase = (
   options: { gate?: "inner" | "full" } = {},
 ): Effect.Effect<
   { ok: boolean; error?: string; output: string },
-  never,
-  import("@effect/platform/CommandExecutor").CommandExecutor
+  import("@effect/platform/Error").PlatformError,
+  import("@effect/platform/CommandExecutor").CommandExecutor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     if (!config.requireVerify) {
@@ -118,7 +118,7 @@ export const runVerifyPhase = (
           ? "none"
           : config.serveVerifyGate;
 
-    const all = resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
+    const all = yield* resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
     const commands = filterVerifyCommandsForServe(all, gate);
     if (commands.length === 0 && all.length > 0 && gate === "inner") {
       return {
@@ -165,7 +165,9 @@ export const verifyIssue = (
 ): Effect.Effect<
   ProcessResult,
   unknown,
-  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -242,7 +244,12 @@ export const processIssue = (
       issue.summary,
     );
     const ws = stateWorkspaceFields(roots);
-    const prompt = buildAgentPrompt({ issue, roots, config });
+    const verifyCommands = yield* resolveVerifyCommandsForIssue(
+      config,
+      issue.key,
+      roots.keys,
+    );
+    const prompt = buildAgentPrompt({ issue, roots, config, verifyCommands });
     const transcript = options.epic
       ? yield* openTranscript(options.epic, issue.key)
       : undefined;

@@ -77,7 +77,26 @@ const CONFIG_NAMES = [
   "issue-dinner.config.json",
 ];
 
-export function findConfigPath(explicit?: string): string | undefined {
+export const findConfigPath = (
+  explicit?: string,
+): Effect.Effect<
+  string | undefined,
+  import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    if (explicit) return resolve(explicit);
+    const fs = yield* FileSystem.FileSystem;
+    for (const name of CONFIG_NAMES) {
+      if (yield* fs.exists(name)) return resolve(name);
+    }
+    const example = resolve("config.example.json");
+    if (yield* fs.exists(example)) return example;
+    return undefined;
+  });
+
+/** @deprecated Use findConfigPath Effect program. */
+export function findConfigPathSync(explicit?: string): string | undefined {
   if (explicit) return resolve(explicit);
   for (const name of CONFIG_NAMES) {
     if (existsSync(name)) return resolve(name);
@@ -91,7 +110,13 @@ export const loadMachineConfig = (
   explicit?: string,
 ): Effect.Effect<MachineConfig, ConfigNotFound, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const path = findConfigPath(explicit);
+    const path = yield* findConfigPath(explicit).pipe(
+      Effect.catchAll(() =>
+        Effect.fail(
+          new ConfigNotFound({ message: "Failed to locate install config" }),
+        ),
+      ),
+    );
     if (!path) {
       return yield* Effect.fail(
         new ConfigNotFound({

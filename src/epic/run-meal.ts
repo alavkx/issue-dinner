@@ -40,6 +40,7 @@ import type { JiraIssue } from "../jira/acli.js";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 
 function buildServeInvocation(
+  cliExecutable: string,
   epic: string,
   configPath: string | undefined,
   flags: {
@@ -53,7 +54,7 @@ function buildServeInvocation(
     dryRun?: boolean;
   },
 ): string {
-  const parts = [shellQuote(resolveCliExecutable()), shellQuote(epic)];
+  const parts = [shellQuote(cliExecutable), shellQuote(epic)];
   if (configPath) parts.push("-c", shellQuote(configPath));
   parts.push("serve");
   if (flags.dryRun) parts.push("--dry-run");
@@ -97,7 +98,11 @@ const runMealPreflight = (
     checkTmux?: boolean;
     validateVerify?: boolean;
   },
-): Effect.Effect<void, never, StateStore | CommandExecutor.CommandExecutor> =>
+): Effect.Effect<
+  void,
+  import("@effect/platform/Error").PlatformError,
+  StateStore | CommandExecutor.CommandExecutor | FileSystem.FileSystem
+> =>
   Effect.gen(function* () {
     const report = yield* runPreflight({
       config: meal.machine,
@@ -507,7 +512,8 @@ const runMealWithStore = (
         return;
       }
       case "launch": {
-        const resolvedConfigPath = findConfigPath(configPath);
+        const resolvedConfigPath = yield* findConfigPath(configPath);
+        const cliExecutable = yield* resolveCliExecutable();
         const exclude = flagValue(args, "--exclude");
         const dryRun = hasFlag(args, "--dry-run");
         const noPrep = hasFlag(args, "--no-prep");
@@ -552,7 +558,11 @@ const runMealWithStore = (
           console.log("");
         }
 
-        const inner = buildServeInvocation(meal.epic, resolvedConfigPath, {
+        const inner = buildServeInvocation(
+          cliExecutable,
+          meal.epic,
+          resolvedConfigPath,
+          {
           continueOnError: hasFlag(args, "--continue-on-error"),
           skipDone: !hasFlag(args, "--no-skip-done"),
           exclude,
@@ -561,7 +571,8 @@ const runMealWithStore = (
           skipVerify: hasFlag(args, "--skip-verify"),
           skipPreflight: true,
           dryRun,
-        });
+        },
+        );
 
         const apiKey = dryRun
           ? (process.env.ISSUE_DINNER_CURSOR_API_KEY?.trim() ?? "")

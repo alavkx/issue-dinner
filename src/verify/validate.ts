@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import * as Effect from "effect/Effect";
 import type { DinnerConfig, ServeVerifyGate } from "../config.js";
@@ -33,12 +33,12 @@ export const validateVerifyCommands = (
   options: { gate?: ServeVerifyGate } = {},
 ): Effect.Effect<
   VerifyValidationResult[],
-  never,
-  CommandExecutor.CommandExecutor
+  import("@effect/platform/Error").PlatformError,
+  CommandExecutor.CommandExecutor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const results: VerifyValidationResult[] = [];
-    const all = resolveVerifyCommandsForIssue(config, issueKey, workspaceKeys);
+    const all = yield* resolveVerifyCommandsForIssue(config, issueKey, workspaceKeys);
     const gate = options.gate ?? "full";
     const commands = filterVerifyCommandsForServe(all, gate);
     if (gate === "inner" && all.length > commands.length) {
@@ -89,7 +89,8 @@ export const validateVerifyCommands = (
 
       for (const rel of pathArgs) {
         const abs = join(cmd.cwd, rel);
-        const exists = existsSync(abs);
+        const fs = yield* FileSystem.FileSystem;
+        const exists = yield* fs.exists(abs);
         results.push({
           ok: exists,
           message: `verify ${cmd.name}: ${rel} ${exists ? "exists" : "missing"} (${cmd.cwd})`,

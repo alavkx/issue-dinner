@@ -4,6 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
+import * as Effect from "effect/Effect";
+import { runEffect } from "../effect/test-runtime.js";
 import {
   inferInnerVerifyCommands,
   unitTestPathsBesideIntegration,
@@ -18,12 +20,18 @@ describe("unitTestPathsBesideIntegration", () => {
     writeFileSync(join(unitDir, "test_notification_service.py"), "");
     writeFileSync(join(unitDir, "test_notification_task.py"), "");
 
-    const paths = unitTestPathsBesideIntegration(
-      cwd,
-      "tests/v3/integration/test_notification_routes.py",
+    return runEffect(
+      unitTestPathsBesideIntegration(
+        cwd,
+        "tests/v3/integration/test_notification_routes.py",
+      ).pipe(
+        Effect.tap((paths) => {
+          assert.equal(paths.length, 2);
+          assert.ok(paths.every((p) => p.includes("unit_test")));
+        }),
+        Effect.asVoid,
+      ),
     );
-    assert.equal(paths.length, 2);
-    assert.ok(paths.every((p) => p.includes("unit_test")));
   });
 });
 
@@ -51,14 +59,22 @@ describe("inferInnerVerifyCommands", () => {
       cwd,
     };
 
-    const inferred = inferInnerVerifyCommands([outer]);
-    assert.equal(inferred.length, 1);
-    assert.equal(inferred[0]?.tier, "inner");
-    assert.ok(
-      inferred[0]?.args.some((a) => a.includes("test_notification_service.py")),
-    );
-    assert.ok(
-      !inferred[0]?.args.some((a) => a.includes("integration")),
+    return runEffect(
+      inferInnerVerifyCommands([outer]).pipe(
+        Effect.tap((inferred) => {
+          assert.equal(inferred.length, 1);
+          assert.equal(inferred[0]?.tier, "inner");
+          assert.ok(
+            inferred[0]?.args.some((a) =>
+              a.includes("test_notification_service.py"),
+            ),
+          );
+          assert.ok(
+            !inferred[0]?.args.some((a) => a.includes("integration")),
+          );
+        }),
+        Effect.asVoid,
+      ),
     );
   });
 });

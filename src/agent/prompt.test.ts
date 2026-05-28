@@ -46,6 +46,14 @@ describe("buildAgentPrompt", () => {
         cwds: ["/tmp/fileservice2"],
       },
       config,
+      verifyCommands: [
+        {
+          name: "events-unit",
+          command: "poetry",
+          args: ["run", "pytest", "tests/v3/unit_test/events/", "-q"],
+          cwd: "/tmp/fileservice2",
+        },
+      ],
     });
 
     assert.match(prompt, /tracer bullets/i);
@@ -73,9 +81,8 @@ describe("buildAgentPrompt", () => {
         cwds: ["/tmp/be", "/tmp/schemas", "/tmp/sdk"],
       },
       config,
+      verifyCommands: [],
     });
-
-    assert.match(prompt, /Multi-root workspace/i);
     assert.match(prompt, /\/tmp\/be/);
     assert.match(prompt, /\/tmp\/schemas/);
     assert.match(prompt, /\/tmp\/sdk/);

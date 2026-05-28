@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import {
   layer as makeStateStoreLayer,
   StateStore,
@@ -36,7 +38,20 @@ export const stateStoreLayerForEpic = (
 
 export { StateStore };
 
-export function resolveCliExecutable(): string {
+export const resolveCliExecutable = (): Effect.Effect<
+  string,
+  import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const entry = process.argv[1];
+    if (!entry) return "issue-dinner";
+    const fs = yield* FileSystem.FileSystem;
+    return (yield* fs.exists(entry)) ? resolve(entry) : "issue-dinner";
+  });
+
+/** @deprecated Use resolveCliExecutable Effect program. */
+export function resolveCliExecutableSync(): string {
   const entry = process.argv[1];
   if (!entry) return "issue-dinner";
   return existsSync(entry) ? resolve(entry) : "issue-dinner";
