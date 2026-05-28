@@ -1,6 +1,7 @@
 import {
   selfHealInvocationFlags,
 } from "../runtime/self-heal-flags.js";
+import { stayAwakeInvocationFlags } from "../runtime/stay-awake.js";
 import {
   WATCH_FLAG,
   WATCH_RESTART_ON_CRASH_FLAG,
@@ -19,6 +20,7 @@ export interface ServeInvocationFlags {
   selfHeal?: boolean;
   watch?: boolean;
   watchRestartOnCrash?: boolean;
+  stayAwake?: boolean;
 }
 
 export function buildServeInvocation(
@@ -37,6 +39,7 @@ export function buildServeInvocation(
   if (flags.skipVerify) parts.push("--skip-verify");
   if (flags.skipPreflight) parts.push("--skip-preflight");
   parts.push(...selfHealInvocationFlags(flags.selfHeal ?? true));
+  parts.push(...stayAwakeInvocationFlags(flags.stayAwake ?? false));
   if (flags.watch) parts.push(WATCH_FLAG);
   if (flags.watchRestartOnCrash) parts.push(WATCH_RESTART_ON_CRASH_FLAG);
   if (flags.only) parts.push("--only", shellQuote(flags.only));

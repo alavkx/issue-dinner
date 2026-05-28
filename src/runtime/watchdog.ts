@@ -9,6 +9,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as out from "../ui/out.js";
 import { projectSrcDir, resolveProjectRoot } from "./project-root.js";
+import { isStayAwakeEnabled, startStayAwake } from "./stay-awake.js";
 import {
   isWatchChild,
   RESTART_EXIT_CODE,
@@ -157,6 +158,10 @@ export const runWatchdog = (
     out.banner("Issue dinner watchdog");
     out.info(`Watching ${srcRoot}`);
     out.info(`Child: ${process.execPath} ${process.argv[1]} ${argv.join(" ")}`);
+
+    if (isStayAwakeEnabled(argv)) {
+      yield* startStayAwake();
+    }
 
     yield* fs.watch(srcRoot, { recursive: true }).pipe(
       Stream.filter((event) => isSourceWatchEvent(event, srcRoot)),
