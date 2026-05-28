@@ -23,4 +23,18 @@ describe("serve self-heal defaults", () => {
     assert.equal(isSelfHealEnabled(["serve", "--skip-preflight"]), true);
     assert.equal(isSelfHealEnabled(["serve", NO_SELF_HEAL_FLAG]), false);
   });
+
+  it("forwards --stay-awake into tmux serve invocations", () => {
+    const cmd = buildServeInvocation("/usr/local/bin/issue-dinner", "CPD-635", undefined, {
+      stayAwake: true,
+    });
+    assert.match(cmd, /--stay-awake/);
+  });
+
+  it("does not forward stay-awake when disabled", () => {
+    const cmd = buildServeInvocation("/usr/local/bin/issue-dinner", "CPD-635", undefined, {
+      stayAwake: false,
+    });
+    assert.doesNotMatch(cmd, /--stay-awake/);
+  });
 });

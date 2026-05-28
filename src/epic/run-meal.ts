@@ -37,6 +37,8 @@ import {
   WATCH_FLAG,
   WATCH_RESTART_ON_CRASH_FLAG,
 } from "../runtime/watchdog.js";
+import { isWatchChild } from "../runtime/relaunch.js";
+import { isStayAwakeEnabled, startStayAwake } from "../runtime/stay-awake.js";
 import type { KitchenBuildPort } from "../self-heal/kitchen.js";
 import {
   formatContributeReminder,
@@ -149,6 +151,14 @@ const runMealWithStore = (
     const store = yield* StateStore;
     const command = assertMealCommand(argv[0]);
     const args = argv.slice(1);
+
+    if (
+      command !== "launch" &&
+      isStayAwakeEnabled(args) &&
+      !isWatchChild()
+    ) {
+      yield* startStayAwake();
+    }
 
     switch (command) {
       case "list": {
@@ -670,6 +680,7 @@ const runMealWithStore = (
             !hasFlag(args, NO_WATCH_RESTART_ON_CRASH_FLAG) &&
             (hasFlag(args, WATCH_RESTART_ON_CRASH_FLAG) ||
               hasFlag(args, WATCH_FLAG)),
+          stayAwake: isStayAwakeEnabled(args),
         },
         );
 
