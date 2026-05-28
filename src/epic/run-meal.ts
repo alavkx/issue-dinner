@@ -6,7 +6,7 @@ import {
   verifyIssue,
 } from "../agent/runner.js";
 import { cursorApiKey } from "../env.js";
-import { ConfigNotFound, type MissingCursorApiKey } from "../effect/errors.js";
+import { ConfigNotFound, type MissingCursorApiKey, type TmuxNotFound } from "../effect/errors.js";
 import {
   assertPreflight,
   formatPreflightReport,
@@ -579,15 +579,13 @@ const runMealWithStore = (
         }
 
         const launchApiKey = yield* cursorApiKey;
-        yield* Effect.sync(() =>
-          launchInTmux({
-            session: flagValue(args, "--session") ?? "dinner",
-            innerCommand: inner,
-            apiKey: launchApiKey,
-            epic: meal.epic,
-            detach: hasFlag(args, "--detach"),
-          }),
-        );
+        yield* launchInTmux({
+          session: flagValue(args, "--session") ?? "dinner",
+          innerCommand: inner,
+          apiKey: launchApiKey,
+          epic: meal.epic,
+          detach: hasFlag(args, "--detach"),
+        });
         return;
       }
       case "cook": {
@@ -636,7 +634,7 @@ export const runMealArgv = (
   configPath?: string,
 ): Effect.Effect<
   void,
-  ConfigNotFound | MissingCursorApiKey | unknown,
+  ConfigNotFound | MissingCursorApiKey | TmuxNotFound | unknown,
   FileSystem.FileSystem | CommandExecutor.CommandExecutor
 > =>
   Effect.gen(function* () {

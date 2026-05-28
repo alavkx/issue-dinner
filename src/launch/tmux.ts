@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Effect from "effect/Effect";
 import { cursorApiKeyEnvName } from "../env.js";
+import { TmuxNotFound } from "../effect/errors.js";
 import { formatAttachReplay } from "../serve/transcript.js";
 import { sessionHistoryPath } from "../serve/transcript.js";
-import { commandExists, shellQuote } from "../util/exec.js";
+import { commandExists, commandExitCode, shellQuote } from "../util/exec.js";
 
 export interface LaunchOptions {
   session: string;
@@ -16,21 +19,29 @@ export interface LaunchOptions {
   detach?: boolean;
 }
 
-export function ensureTmux(): void {
-  if (!commandExists("tmux")) {
-    throw new Error(
-      "tmux is not on PATH. Install tmux or run `issue-dinner serve` in a persistent terminal.",
-    );
-  }
-}
-
-export function tmuxHasSession(session: string): boolean {
-  const r = spawnSync("tmux", ["has-session", "-t", session], {
-    encoding: "utf8",
-    stdio: "pipe",
+export const ensureTmux = (): Effect.Effect<
+  void,
+  TmuxNotFound,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    if (!(yield* commandExists("tmux"))) {
+      return yield* Effect.fail(
+        new TmuxNotFound({
+          message:
+            "tmux is not on PATH. Install tmux or run `issue-dinner serve` in a persistent terminal.",
+        }),
+      );
+    }
   });
-  return r.status === 0;
-}
+
+export const tmuxHasSession = (
+  session: string,
+): Effect.Effect<boolean, never, CommandExecutor.CommandExecutor> =>
+  commandExitCode("tmux", ["has-session", "-t", session]).pipe(
+    Effect.map((code) => code === 0),
+    Effect.catchAll(() => Effect.succeed(false)),
+  );
 
 export function buildLaunchShellCommand(
   innerCommand: string,
@@ -64,44 +75,69 @@ export function buildLaunchShellCommand(
   ].join("; ");
 }
 
-function attachToSession(session: string): void {
-  const attach = spawnSync("tmux", ["attach-session", "-t", session], {
-    stdio: "inherit",
+const attachToSession = (session: string): Effect.Effect<void, never> =>
+  Effect.sync(() => {
+    const attach = spawnSync("tmux", ["attach-session", "-t", session], {
+      stdio: "inherit",
+    });
+    if (attach.status !== 0) process.exit(attach.status ?? 1);
   });
-  if (attach.status !== 0) process.exit(attach.status ?? 1);
-}
 
-export function launchInTmux(opts: LaunchOptions): void {
-  ensureTmux();
-  const shellCmd = buildLaunchShellCommand(
-    opts.innerCommand,
-    opts.apiKey,
-    opts.epic,
-  );
-  const detach = opts.detach ?? false;
+const createTmuxSession = (
+  session: string,
+  shellCmd: string,
+  detach: boolean,
+): Effect.Effect<void, TmuxNotFound> =>
+  Effect.gen(function* () {
+    const args = ["new-session", "-x", "220", "-y", "60"];
+    if (detach) args.push("-d");
+    args.push("-s", session, shellCmd);
 
-  if (tmuxHasSession(opts.session)) {
-    if (detach) {
-      console.log(`tmux session "${opts.session}" already exists — attach with:`);
-      console.log(`  tmux attach -t ${opts.session}`);
+    const status = yield* Effect.sync(() =>
+      spawnSync("tmux", args, { stdio: "inherit" }).status,
+    );
+    if (status !== 0) {
+      return yield* Effect.fail(
+        new TmuxNotFound({
+          message: `tmux failed (exit ${status ?? "unknown"})`,
+        }),
+      );
+    }
+  });
+
+export const launchInTmux = (
+  opts: LaunchOptions,
+): Effect.Effect<void, TmuxNotFound, CommandExecutor.CommandExecutor> =>
+  Effect.gen(function* () {
+    yield* ensureTmux();
+    const shellCmd = buildLaunchShellCommand(
+      opts.innerCommand,
+      opts.apiKey,
+      opts.epic,
+    );
+    const detach = opts.detach ?? false;
+
+    if (yield* tmuxHasSession(opts.session)) {
+      if (detach) {
+        yield* Effect.sync(() => {
+          console.log(
+            `tmux session "${opts.session}" already exists — attach with:`,
+          );
+          console.log(`  tmux attach -t ${opts.session}`);
+        });
+        return;
+      }
+      yield* attachToSession(opts.session);
       return;
     }
-    attachToSession(opts.session);
-    return;
-  }
 
-  const args = ["new-session", "-x", "220", "-y", "60"];
-  if (detach) args.push("-d");
-  args.push("-s", opts.session, shellCmd);
+    yield* createTmuxSession(opts.session, shellCmd, detach);
 
-  const created = spawnSync("tmux", args, { stdio: "inherit" });
-  if (created.status !== 0) {
-    throw new Error(`tmux failed (exit ${created.status ?? "unknown"})`);
-  }
-
-  if (detach) {
-    console.log(`Started session "${opts.session}" (detached).`);
-    console.log(`  tmux attach -t ${opts.session}`);
-    console.log(`  issue-dinner status`);
-  }
-}
+    if (detach) {
+      yield* Effect.sync(() => {
+        console.log(`Started session "${opts.session}" (detached).`);
+        console.log(`  tmux attach -t ${opts.session}`);
+        console.log(`  issue-dinner status`);
+      });
+    }
+  });

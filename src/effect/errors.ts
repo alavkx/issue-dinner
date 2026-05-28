@@ -17,6 +17,14 @@ export class MissingCursorApiKey extends Schema.TaggedError<MissingCursorApiKey>
   },
 ) {}
 
+/** tmux is not installed or not on PATH. */
+export class TmuxNotFound extends Schema.TaggedError<TmuxNotFound>()(
+  "TmuxNotFound",
+  {
+    message: Schema.String,
+  },
+) {}
+
 /** Subprocess exited with a non-zero code. */
 export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
   "CommandFailed",

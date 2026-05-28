@@ -5,7 +5,7 @@ import { NodeRuntime } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import { verifyIssue } from "./agent/runner.js";
 import { loadMachineConfig } from "./config.js";
-import { ConfigNotFound, MissingCursorApiKey } from "./effect/errors.js";
+import { ConfigNotFound, MissingCursorApiKey, TmuxNotFound } from "./effect/errors.js";
 import { PlatformLive } from "./effect/layers.js";
 import { parseTopLevelArgv } from "./epic/parse-argv.js";
 import { runMealArgv } from "./epic/run-meal.js";
@@ -127,6 +127,11 @@ NodeRuntime.runMain(
           process.exitCode = 1;
         }),
       MissingCursorApiKey: (e: MissingCursorApiKey) =>
+        Effect.sync(() => {
+          console.error(e.message);
+          process.exitCode = 1;
+        }),
+      TmuxNotFound: (e: TmuxNotFound) =>
         Effect.sync(() => {
           console.error(e.message);
           process.exitCode = 1;

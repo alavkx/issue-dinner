@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildLaunchShellCommand } from "./tmux.js";
+import * as Effect from "effect/Effect";
+import { runEffect } from "../effect/test-runtime.js";
+import { buildLaunchShellCommand, tmuxHasSession } from "./tmux.js";
 
 describe("buildLaunchShellCommand", () => {
   it("exports ISSUE_DINNER_CURSOR_API_KEY before serve", () => {
@@ -30,4 +32,14 @@ describe("buildLaunchShellCommand", () => {
     assert.match(cmd, /exec .* -l/);
     assert.match(cmd, /serve finished/);
   });
+});
+
+describe("tmuxHasSession", () => {
+  it("returns false for a session that does not exist", () =>
+    runEffect(
+      tmuxHasSession("issue-dinner-nonexistent-session-xyz").pipe(
+        Effect.tap((exists) => assert.equal(exists, false)),
+        Effect.asVoid,
+      ),
+    ));
 });

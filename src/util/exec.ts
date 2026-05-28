@@ -65,7 +65,26 @@ export function shellQuote(arg: string): string {
 export const commandExists = (
   command: string,
 ): Effect.Effect<boolean, never, CommandExecutor.CommandExecutor> =>
-  Command.exitCode(Command.make("which", command)).pipe(
+  commandExitCode("which", [command]).pipe(
     Effect.map((code) => code === 0),
     Effect.catchAll(() => Effect.succeed(false)),
+  );
+
+export const commandExitCode = (
+  command: string,
+  args: ReadonlyArray<string>,
+  options?: { cwd?: string },
+): Effect.Effect<
+  number,
+  import("@effect/platform/Error").PlatformError,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let cmd = Command.make(command, ...args);
+      if (options?.cwd) {
+        cmd = Command.workingDirectory(cmd, options.cwd);
+      }
+      return yield* Command.exitCode(cmd);
+    }),
   );
