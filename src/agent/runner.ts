@@ -357,10 +357,7 @@ export const processIssue = (
             writeStderr: (t: string) => process.stderr.write(t),
             transcript: (t: string) => transcript?.append(t),
           };
-          const drain = yield* Effect.tryPromise({
-            try: () => drainRunStream(run.stream(), sink),
-            catch: (err) => err,
-          });
+          const drain = yield* drainRunStream(run.stream(), sink);
           streamCanceled = drain.canceled;
         }
 

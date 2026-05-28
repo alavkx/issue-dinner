@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import type { SDKMessage } from "@cursor/sdk";
+import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
+import { runEffect } from "../effect/test-runtime.js";
 import { drainRunStream } from "./stream-handler.js";
 
 async function* canceledStream(): AsyncIterable<SDKMessage> {
@@ -17,11 +19,16 @@ async function* canceledStream(): AsyncIterable<SDKMessage> {
 }
 
 describe("drainRunStream", () => {
-  it("returns canceled instead of throwing on SDK abort", async () => {
-    const result = await drainRunStream(canceledStream(), {
-      writeStdout: () => {},
-      writeStderr: () => {},
-    });
-    assert.equal(result.canceled, true);
-  });
+  it("returns canceled instead of throwing on SDK abort", () =>
+    runEffect(
+      drainRunStream(canceledStream(), {
+        writeStdout: () => {},
+        writeStderr: () => {},
+      }).pipe(
+        Effect.tap((result) => {
+          assert.equal(result.canceled, true);
+        }),
+        Effect.asVoid,
+      ),
+    ));
 });

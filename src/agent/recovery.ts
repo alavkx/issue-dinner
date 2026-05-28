@@ -117,10 +117,7 @@ export const runRecoveryAgent = (options: {
               : (t: string) => process.stderr.write(t),
             transcript: (t: string) => options.transcript?.append(t),
           };
-          const drain = yield* Effect.tryPromise({
-            try: () => drainRunStream(run.stream(), sink),
-            catch: (err) => err,
-          });
+          const drain = yield* drainRunStream(run.stream(), sink);
 
           const waitResult = yield* Effect.tryPromise({
             try: () => run.wait(),

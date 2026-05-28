@@ -1,4 +1,6 @@
 import type { SDKMessage } from "@cursor/sdk";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { isSdkCanceledError } from "./sdk-errors.js";
 import { fg } from "../ui/theme.js";
 
@@ -86,19 +88,18 @@ export function handleStreamEvent(
   }
 }
 
-export async function drainRunStream(
+export const drainRunStream = (
   stream: AsyncIterable<SDKMessage>,
   sink: StreamSink = defaultSink,
-): Promise<DrainStreamResult> {
-  try {
-    for await (const event of stream) {
-      handleStreamEvent(event, sink);
-    }
-    return { canceled: false };
-  } catch (err) {
-    if (isSdkCanceledError(err)) {
-      return { canceled: true };
-    }
-    throw err;
-  }
-}
+): Effect.Effect<DrainStreamResult, unknown> =>
+  Stream.fromAsyncIterable(stream, (err) => err).pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => handleStreamEvent(event, sink)),
+    ),
+    Effect.map(() => ({ canceled: false as const })),
+    Effect.catchAll((err) =>
+      isSdkCanceledError(err)
+        ? Effect.succeed({ canceled: true as const })
+        : Effect.fail(err),
+    ),
+  );
