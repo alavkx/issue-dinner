@@ -10,7 +10,7 @@ import { effectiveVerifyTier } from "./tier.js";
 export interface VerifyCommand {
   name: string;
   command: string;
-  args: string[];
+  args: ReadonlyArray<string>;
   workspace?: string;
   tier?: "inner" | "outer";
 }

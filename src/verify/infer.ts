@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { ResolvedVerifyCommand } from "./resolve.js";
 import { effectiveVerifyTier } from "./tier.js";
 
-export function pathArgsFromVerifyArgs(args: string[]): string[] {
+export function pathArgsFromVerifyArgs(args: ReadonlyArray<string>): string[] {
   const paths: string[] = [];
   for (const arg of args) {
     if (arg.startsWith("-")) continue;
@@ -35,7 +35,7 @@ export function unitTestPathsBesideIntegration(
 }
 
 function rebuildPytestArgs(
-  args: string[],
+  args: ReadonlyArray<string>,
   integrationPath: string,
   unitPaths: string[],
 ): string[] {

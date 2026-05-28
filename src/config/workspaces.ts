@@ -56,7 +56,7 @@ export function resolveIssueWorkspaces(
   let keys: string[];
   const configured = config.issueWorkspaces?.[issueKey];
   if (configured && configured.length > 0) {
-    keys = configured;
+    keys = [...configured];
   } else {
     keys = [resolveWorkspaceKey(config, issueKey, description, summary)];
   }
@@ -82,10 +82,13 @@ export function sdkCwd(cwds: string[]): string | string[] {
 export function localAgentOptions(
   config: DinnerConfig,
   cwds: string[],
-): { cwd: string | string[]; settingSources: DinnerConfig["settingSources"] } {
+): {
+  cwd: string | string[];
+  settingSources: Array<"project" | "user" | "team">;
+} {
   return {
     cwd: sdkCwd(cwds),
-    settingSources: config.settingSources,
+    settingSources: [...config.settingSources],
   };
 }
 

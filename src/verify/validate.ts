@@ -13,7 +13,7 @@ export interface VerifyValidationResult {
   fix?: string;
 }
 
-function pathArgsFromCommand(args: string[]): string[] {
+function pathArgsFromCommand(args: ReadonlyArray<string>): string[] {
   const paths: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
