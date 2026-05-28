@@ -9,6 +9,8 @@ export interface PromptContext {
   roots: IssueWorkspaces;
   config: MachineConfig;
   verifyCommands: ResolvedVerifyCommand[];
+  selfHeal?: boolean;
+  kitchenRoot?: string;
 }
 
 function formatWorkspaceSection(roots: IssueWorkspaces): string {
@@ -23,12 +25,40 @@ ${lines.join("\n")}
 }
 
 export function buildAgentPrompt(ctx: PromptContext): string {
-  const { issue, roots, config, verifyCommands } = ctx;
+  const { issue, roots, config, verifyCommands, selfHeal, kitchenRoot } = ctx;
   const ac = issue.parsed.acceptanceCriteria
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n");
 
   const verifySection = formatVerifyCommandsForPrompt(verifyCommands);
+
+  const kitchenSection =
+    selfHeal && kitchenRoot
+      ? `
+## Kitchen (issue-dinner self-heal — on by default)
+
+If you discover a bug or missing capability in **issue-dinner itself** while working this course, patch the CLI sources instead of leaving a follow-up.
+
+1. Create \`.issue-dinner/kitchen/inbox/<short-name>/manifest.json\` under the issue-dinner root:
+   - **Root:** \`${kitchenRoot}\`
+2. Manifest shape:
+
+\`\`\`json
+{
+  "id": "<short-name>",
+  "issueKey": "${issue.key}",
+  "reason": "what you fixed in issue-dinner",
+  "files": [
+    { "path": "src/...", "content": "<full file contents>" }
+  ]
+}
+\`\`\`
+
+3. Only patch \`src/**/*.ts\` paths. issue-dinner applies patches **between courses**, runs typecheck + build, then hot-restarts the serve loop.
+4. After serve, run \`issue-dinner kitchen contribute\` to open a PR against \`main\` (or set \`ISSUE_DINNER_CONTRIBUTE_BASE\`).
+5. Prefer minimal, focused fixes. Do not patch unrelated files.
+`
+      : "";
 
   return `You are implementing one Jira **vertical slice** across a multi-root local workspace when configured.
 
@@ -52,7 +82,7 @@ ${issue.description}
 Place tests and code so inner verify passes:
 
 ${verifySection}
-
+${kitchenSection}
 ## How to work (TDD — vertical slices only)
 
 Do **not** write all tests then all code (horizontal slices). Use **tracer bullets**:
