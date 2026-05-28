@@ -85,6 +85,8 @@ Tests must describe **observable behavior**, survive refactors, and use the proj
 
 When multiple roots are listed, implement the slice **in repo order** (e.g. OpenAPI → SDK regen → backend → frontend tests). Do not defer cross-repo work to follow-ups unless blocked by environment.
 
+When **frontend** and **sdk** are both in the workspace, issue-dinner links \`@istari/istari-client\` to the local \`istari-ts-client\` checkout before you start — use the linked SDK types; do not revert to a published npm version mid-slice.
+
 ## Quality
 - Follow ADRs and CONTEXT docs; do not re-debate settled design.
 - No placeholder TODOs or \`not implemented\` throws in production paths.

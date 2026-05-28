@@ -2,6 +2,7 @@ import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import * as Effect from "effect/Effect";
 import { CommandFailed } from "../effect/errors.js";
 import { runCommand } from "../util/exec.js";
+import { autoStashMessage } from "./restore-stash.js";
 import { commitWorkspaceWip, gitIsDirty } from "./workspace.js";
 
 export type WorkspaceRecoveryAction =
@@ -61,7 +62,7 @@ export const recoverDirtyWorkspace = (
           "--all",
           "--include-untracked",
           "-m",
-          `issue-dinner auto-stash ${issueKey}`,
+          autoStashMessage(issueKey),
         ],
         { cwd },
       ),

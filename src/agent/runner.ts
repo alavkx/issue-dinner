@@ -4,9 +4,11 @@ import type { StackConfig } from "../stack/stack-config.js";
 import {
   formatWorkspacesLabel,
   courseAgentOptions,
+  resolveCwd,
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
+import { restoreAutoStashedWorkspaces } from "../git/restore-stash.js";
 import * as FileSystem from "@effect/platform/FileSystem";
 import { CommandFailed } from "../effect/errors.js";
 import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
@@ -36,6 +38,7 @@ import {
 } from "../self-heal/heal-agent.js";
 import { attemptInlineHealFromCourse } from "../self-heal/inline-heal.js";
 import { snapshotSrcFiles } from "../self-heal/durable-patches.js";
+import { ensureLocalSdkLink } from "../stack/link-local-sdk.js";
 import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
 import { drainRunStream } from "./stream-handler.js";
 import {
@@ -412,6 +415,38 @@ export const processIssue = (
         }
       }
       branches = yield* recordBranches(roots);
+
+      const workspaceRows = roots.keys.map((key, i) => ({
+        key,
+        cwd: roots.cwds[i]!,
+      }));
+      const restored = yield* restoreAutoStashedWorkspaces(
+        issue.key,
+        workspaceRows,
+      );
+      for (const row of restored) {
+        if (!row.restored) continue;
+        out.info(
+          `${issue.key}: restored auto-stashed WIP in ${row.cwd}${row.detail ? ` (${row.detail})` : ""}`,
+        );
+        if (transcript) {
+          yield* appendTranscriptLine(
+            transcript,
+            `restored auto-stash in ${row.cwd}`,
+          );
+        }
+      }
+
+      if (roots.keys.includes("frontend") && roots.keys.includes("sdk")) {
+        const frontendCwd = resolveCwd(config, "frontend");
+        const sdkCwd = resolveCwd(config, "sdk");
+        const link = yield* ensureLocalSdkLink(frontendCwd, sdkCwd);
+        if (link.linked) {
+          out.info(`${issue.key}: @istari/istari-client → ${link.detail}`);
+        } else {
+          out.warn(`${issue.key}: SDK link failed — ${link.detail}`);
+        }
+      }
     } else if (!options.dryRun) {
       branches = yield* recordBranches(roots);
     }
