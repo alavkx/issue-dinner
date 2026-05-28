@@ -6,7 +6,7 @@ import { storyBranchName } from "../stack/names.js";
 import { serveLogPath } from "./log.js";
 import * as FileSystem from "@effect/platform/FileSystem";
 import { sessionHistoryPath } from "./transcript.js";
-import { explainCourseFailure, isResolutionNoise } from "./explain.js";
+import { explainCourseFailure } from "./explain.js";
 import {
   countMenuFailures,
   findFirstMenuFailure,
@@ -14,6 +14,15 @@ import {
   primaryFailureMessage,
   type ServeHaltInfo,
 } from "./failures.js";
+import {
+  countRecoveryAttempts,
+  extractHandoffExcerpt,
+  extractManualVerificationItems,
+  formatDuration,
+  formatKeyList,
+  meaningfulResolutionSteps,
+  wasRecovered,
+} from "./summary-helpers.js";
 import { fg, statusBadge, statusColor } from "../ui/theme.js";
 import * as Effect from "effect/Effect";
 
@@ -27,6 +36,14 @@ export interface ServeSummaryCounts {
   pending: number;
 }
 
+export interface ServeSessionInfo {
+  serveStartedAt?: string;
+  selfHeal?: boolean;
+  cookedThisSession?: ReadonlyArray<string>;
+  skippedAlreadyVerified?: ReadonlyArray<string>;
+  pendingHealContributions?: ReadonlyArray<string>;
+}
+
 export interface ServeSummaryOptions {
   epic: string;
   stack: StackConfig;
@@ -34,6 +51,7 @@ export interface ServeSummaryOptions {
   held: Array<{ key: string; reason: string }>;
   skipped: string[];
   logPath?: string;
+  session?: ServeSessionInfo;
   /** Explicit halt from serve loop (crash, dirty gate, menu order). */
   halt?: ServeHaltInfo;
 }
@@ -94,6 +112,12 @@ function displayFailure(rec: IssueRunRecord): string | undefined {
   return undefined;
 }
 
+function courseBadge(rec: IssueRunRecord | undefined, failedCourse: boolean): string {
+  if (failedCourse) return fg.red("FAILED");
+  if (wasRecovered(rec)) return fg.yellow("verified (recovered)");
+  return statusBadge(rec?.status ?? "pending");
+}
+
 export function printServeHalt(halt: ServeHaltInfo, epic: string): void {
   const explained = explainCourseFailure(halt.issueKey, epic, {
     issueKey: halt.issueKey,
@@ -125,12 +149,33 @@ export function printServeHalt(halt: ServeHaltInfo, epic: string): void {
   console.log("");
 }
 
+const countSessionRecoveryAttempts = (
+  issueKeys: ReadonlyArray<string>,
+  records: ReadonlyMap<string, IssueRunRecord | undefined>,
+): number =>
+  issueKeys.reduce(
+    (total, key) => total + countRecoveryAttempts(records.get(key)?.resolutionSteps),
+    0,
+  );
+
+const allMenuVerified = (
+  issues: JiraIssue[],
+  records: ReadonlyMap<string, IssueRunRecord | undefined>,
+): boolean =>
+  issues.every((issue) => {
+    const rec = records.get(issue.key);
+    return rec?.status === "verified" || rec?.status === "finished";
+  });
+
 export const printServeSummary = (
   options: ServeSummaryOptions,
 ): Effect.Effect<void, import("@effect/platform/Error").PlatformError, StateStore | FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const { epic, stack, issues, held, skipped } = options;
+    const session = options.session ?? {};
+    const cookedThisSession = session.cookedThisSession ?? [];
+    const skippedAlreadyVerified = session.skippedAlreadyVerified ?? skipped;
     const logPath = options.logPath ?? (yield* serveLogPath(epic));
     const counts = yield* countByStatus(issues);
     counts.held = held.length;
@@ -139,6 +184,16 @@ export const printServeSummary = (
     const halt =
       options.halt ??
       (failed > 0 ? yield* findFirstMenuFailure(issues) : undefined);
+
+    const records = new Map<string, IssueRunRecord | undefined>();
+    for (const issue of issues) {
+      records.set(issue.key, yield* store.get(issue.key));
+    }
+
+    const sessionRecoveryAttempts = countSessionRecoveryAttempts(
+      cookedThisSession.length > 0 ? cookedThisSession : issues.map((i) => i.key),
+      records,
+    );
 
     console.log("");
     console.log(
@@ -149,20 +204,48 @@ export const printServeSummary = (
       fg.bold(fg.cyan("══════════════════════════════════════════════════════════")),
     );
     const failTotal = failed + counts.held;
+    const skippedLabel =
+      skippedAlreadyVerified.length > 0
+        ? `skipped (already verified): ${skippedAlreadyVerified.length} [${formatKeyList(skippedAlreadyVerified)}]`
+        : `skipped (already verified): ${counts.skipped}`;
     console.log(
-      `  ${fg.green(`verified: ${counts.verified}`)}   ${fg.yellow(`agent_complete: ${counts.agentComplete}`)}   ${fg.red(`failed: ${failTotal}`)} (${fg.red(`error: ${counts.error}`)} + ${fg.red(`blocked: ${counts.blocked}`)})   held: ${counts.held}   skipped: ${counts.skipped}`,
+      `  ${fg.green(`verified: ${counts.verified}`)}   ${fg.yellow(`agent_complete: ${counts.agentComplete}`)}   ${fg.red(`failed: ${failTotal}`)} (${fg.red(`error: ${counts.error}`)} + ${fg.red(`blocked: ${counts.blocked}`)})   held: ${counts.held}   ${skippedLabel}`,
     );
+    if (cookedThisSession.length > 0) {
+      console.log(
+        fg.dim(
+          `  cooked this session: ${cookedThisSession.length} [${formatKeyList(cookedThisSession)}]`,
+        ),
+      );
+    }
+    const sessionParts: string[] = [];
+    if (session.serveStartedAt) {
+      sessionParts.push(`duration: ${formatDuration(session.serveStartedAt)}`);
+    }
+    if (session.selfHeal !== undefined) {
+      sessionParts.push(`self-heal: ${session.selfHeal ? "on" : "off"}`);
+    }
+    if (sessionRecoveryAttempts > 0) {
+      sessionParts.push(`recovery attempts: ${sessionRecoveryAttempts}`);
+    }
+    const pendingHeals = session.pendingHealContributions ?? [];
+    if (pendingHeals.length > 0) {
+      sessionParts.push(`heal patches pending: ${pendingHeals.length}`);
+    }
+    if (sessionParts.length > 0) {
+      console.log(fg.dim(`  session: ${sessionParts.join("   ")}`));
+    }
     if (logPath) console.log(fg.dim(`  log: ${logPath}`));
     console.log(fg.dim(`  history: ${sessionHistoryPath(epic)}`));
     console.log("");
 
     for (const issue of issues) {
-      const rec = yield* store.get(issue.key);
+      const rec = records.get(issue.key);
       const expectedBranch = storyBranchName(stack.prefix, issue.key);
       const status = rec?.status ?? "pending";
       const failedCourse = issueFailed(rec);
       const paint = failedCourse ? fg.red : statusColor(status);
-      const badge = failedCourse ? fg.red("FAILED") : statusBadge(status);
+      const badge = courseBadge(rec, failedCourse);
       console.log(`${paint(issue.key)}  ${badge}  ${issue.summary}`);
 
       const branches = rec?.branches ?? {};
@@ -170,7 +253,7 @@ export const printServeSummary = (
       if (branchEntries.length > 0) {
         for (const [ws, branch] of branchEntries) {
           const sha = rec?.commits?.[ws];
-          const shaLabel = sha ? ` @ ${sha}` : "";
+          const shaLabel = sha ? ` @ ${sha}` : fg.dim(" (no commit recorded)");
           console.log(`    ${ws}: ${branch}${shaLabel}`);
         }
       } else {
@@ -182,6 +265,30 @@ export const printServeSummary = (
           `    handoff: ${rec.handoffStatus} / ${rec.handoffVerification}`,
         );
       }
+
+      const excerpt = extractHandoffExcerpt(rec?.resultPreview);
+      if (excerpt) {
+        console.log(fg.dim(`    outcome: ${excerpt}`));
+      }
+
+      const manualChecks = extractManualVerificationItems(rec?.resultPreview);
+      for (const item of manualChecks) {
+        console.log(fg.yellow(`    ⚠ manual verification pending: ${item}`));
+      }
+
+      if (wasRecovered(rec)) {
+        const attempts = countRecoveryAttempts(rec?.resolutionSteps);
+        console.log(
+          fg.yellow(
+            `    recovered after ${attempts} recovery attempt${attempts === 1 ? "" : "s"}`,
+          ),
+        );
+        const usefulSteps = meaningfulResolutionSteps(rec?.resolutionSteps);
+        if (usefulSteps.length > 0) {
+          console.log(fg.dim(`    resolution: ${usefulSteps.at(-1)}`));
+        }
+      }
+
       if (failedCourse && rec) {
         const explained = explainCourseFailure(issue.key, epic, rec);
         console.log(fg.red(`    What went wrong: ${explained.whatWentWrong}`));
@@ -197,9 +304,7 @@ export const printServeSummary = (
           console.log(fg.red(`    ✗ ${failureLine}`));
         }
       }
-      const usefulSteps = (rec?.resolutionSteps ?? []).filter(
-        (s) => !isResolutionNoise(s),
-      );
+      const usefulSteps = meaningfulResolutionSteps(rec?.resolutionSteps);
       if (usefulSteps.length > 0 && failedCourse) {
         console.log(fg.dim(`    Log: ${usefulSteps.at(-1)}`));
       }
@@ -217,7 +322,14 @@ export const printServeSummary = (
       console.log("");
     }
 
-    const next = yield* suggestNextCommand(epic, issues, held);
+    const epicComplete = !halt && allMenuVerified(issues, records);
+    const next = yield* suggestNextCommand(epic, issues, held, epicComplete);
+    if (epicComplete) {
+      console.log(fg.green("All courses complete."));
+      console.log(
+        fg.dim("Push story branches and open PRs when ready, then run integration verify as needed."),
+      );
+    }
     if (next) {
       console.log(`Next: ${next}`);
     }
@@ -235,8 +347,16 @@ const suggestNextCommand = (
   epic: string,
   issues: JiraIssue[],
   held: { key: string }[],
+  epicComplete: boolean,
 ): Effect.Effect<string | undefined, never, StateStore> =>
   Effect.gen(function* () {
+    if (epicComplete) {
+      const others = issues.slice(1).map((i) => i.key);
+      if (issues.length === 1) {
+        return `issue-dinner verify ${issues[0]!.key}`;
+      }
+      return `issue-dinner verify ${issues[0]!.key}  # then: ${others.join(", ")}`;
+    }
     const store = yield* StateStore;
     for (const issue of issues) {
       const rec = yield* store.get(issue.key);
