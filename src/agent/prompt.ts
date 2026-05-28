@@ -37,13 +37,14 @@ export function buildAgentPrompt(ctx: PromptContext): string {
       ? `
 ## issue-dinner self-heal (on by default)
 
-If you discover a bug in **issue-dinner itself** while working this course, edit its source directly.
+If you discover a bug in **issue-dinner itself** while working this course, fix it **inline** before finishing.
 
 - **issue-dinner root:** \`${kitchenRoot}\` (included in your workspace \`cwd\`)
 - Edit \`src/**/*.ts\` under that root with normal file tools — do not write JSON patch manifests.
 - Only patch issue-dinner when the blocker is in the CLI tool, not the project slice.
 - Prefer minimal, focused fixes. Do not patch unrelated files.
-- issue-dinner runs a dedicated **heal agent** when orchestration fails; you may fix inline if you spot the issue early.
+- After you edit issue-dinner source, issue-dinner runs typecheck/build validation and restarts so the fix loads; your course resumes with a clean message.
+- If inline repair fails, a dedicated **heal agent** runs when orchestration fails.
 `
       : "";
 

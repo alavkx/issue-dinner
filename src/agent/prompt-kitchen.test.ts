@@ -42,8 +42,10 @@ describe("buildAgentPrompt kitchen section", () => {
     });
 
     assert.match(prompt, /issue-dinner self-heal \(on by default\)/);
+    assert.match(prompt, /fix it \*\*inline\*\* before finishing/);
     assert.match(prompt, /Edit `src\/\*\*\/\*\.ts`/);
     assert.match(prompt, /\/tmp\/issue-dinner/);
+    assert.match(prompt, /typecheck\/build validation and restarts/);
     assert.doesNotMatch(prompt, /manifest\.json/);
   });
 });
