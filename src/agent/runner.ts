@@ -7,6 +7,7 @@ import {
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
+import { CommandFailed } from "../effect/errors.js";
 import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
 import {
   commitCourseWip,
@@ -70,14 +71,15 @@ function stateWorkspaceFields(roots: IssueWorkspaces): {
 
 const recordBranches = (
   roots: IssueWorkspaces,
-): Effect.Effect<Record<string, string>, unknown> =>
+): Effect.Effect<
+  Record<string, string>,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const branches: Record<string, string> = {};
     for (let i = 0; i < roots.keys.length; i++) {
-      branches[roots.keys[i]!] = yield* Effect.tryPromise({
-        try: () => gitCurrentBranch(roots.cwds[i]!),
-        catch: (err) => err,
-      });
+      branches[roots.keys[i]!] = yield* gitCurrentBranch(roots.cwds[i]!);
     }
     return branches;
   });
@@ -87,7 +89,11 @@ export const runVerifyPhase = (
   config: DinnerConfig,
   roots: IssueWorkspaces,
   options: { gate?: "inner" | "full" } = {},
-): Effect.Effect<{ ok: boolean; error?: string; output: string }, unknown> =>
+): Effect.Effect<
+  { ok: boolean; error?: string; output: string },
+  never,
+  import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     if (!config.requireVerify) {
       return { ok: true, output: "(verify disabled in config)" };
@@ -129,10 +135,7 @@ export const runVerifyPhase = (
       "verify",
       `${issue.key} — ${commands.length} command(s), ${roots.keys.length} root(s)`,
     );
-    const result = yield* Effect.tryPromise({
-      try: () => runVerifyCommands(commands),
-      catch: (err) => err,
-    });
+    const result = yield* runVerifyCommands(commands);
     if (!result.ok) {
       const detail = result.failures.map((f) => f.name).join(", ");
       return {
@@ -147,7 +150,11 @@ export const runVerifyPhase = (
 export const verifyIssue = (
   issue: JiraIssue,
   config: DinnerConfig,
-): Effect.Effect<ProcessResult, unknown, StateStore> =>
+): Effect.Effect<
+  ProcessResult,
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const roots = resolveIssueWorkspaces(
@@ -207,7 +214,11 @@ export const processIssue = (
   config: DinnerConfig,
   apiKey: string,
   options: ProcessOptions = {},
-): Effect.Effect<ProcessResult, unknown, StateStore> =>
+): Effect.Effect<
+  ProcessResult,
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const roots = resolveIssueWorkspaces(
@@ -225,12 +236,8 @@ export const processIssue = (
 
     let branches: Record<string, string> = {};
     if (options.stack && !options.dryRun) {
-      const clean = yield* Effect.tryPromise({
-        try: () =>
-          ensureWorkspacesCleanForIssue(config, issue, {
-            label: "stack prep",
-          }),
-        catch: (err) => err,
+      const clean = yield* ensureWorkspacesCleanForIssue(config, issue, {
+        label: "stack prep",
       });
       if (!clean.ok) {
         const msg = clean.detail ?? "workspace not clean for stack prep";
@@ -831,13 +838,14 @@ export const processIssue = (
 
 const workspacesStillDirty = (
   workspaces: Array<{ key: string; cwd: string }>,
-): Effect.Effect<boolean, unknown> =>
+): Effect.Effect<
+  boolean,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     for (const ws of workspaces) {
-      const dirty = yield* Effect.tryPromise({
-        try: () => gitIsDirty(ws.cwd),
-        catch: (err) => err,
-      });
+      const dirty = yield* gitIsDirty(ws.cwd);
       if (dirty) return true;
     }
     return false;
@@ -871,20 +879,20 @@ const commitCourseWithRecovery = (options: {
   apiKey: string;
   transcript?: Transcript;
   workspaces: Array<{ key: string; cwd: string }>;
-}): Effect.Effect<Record<string, string>, unknown, StateStore> =>
+}): Effect.Effect<
+  Record<string, string>,
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     out.phase("commit", "WIP on story branches");
 
-    let results = yield* Effect.tryPromise({
-      try: () =>
-        commitCourseWip(
-          options.issue.key,
-          options.issue.summary,
-          options.workspaces,
-        ),
-      catch: (err) => err,
-    });
+    let results = yield* commitCourseWip(
+      options.issue.key,
+      options.issue.summary,
+      options.workspaces,
+    );
     yield* logCommitResults(results);
 
     if (!(yield* workspacesStillDirty(options.workspaces))) {
@@ -914,28 +922,20 @@ const commitCourseWithRecovery = (options: {
     });
 
     if (recovery.recovered) {
-      results = yield* Effect.tryPromise({
-        try: () =>
-          commitCourseWip(
-            options.issue.key,
-            options.issue.summary,
-            options.workspaces,
-          ),
-        catch: (err) => err,
-      });
+      results = yield* commitCourseWip(
+        options.issue.key,
+        options.issue.summary,
+        options.workspaces,
+      );
       yield* logCommitResults(results);
     }
 
     if (yield* workspacesStillDirty(options.workspaces)) {
-      const stashResults = yield* Effect.tryPromise({
-        try: () =>
-          recoverDirtyWorkspaces(
-            options.issue.key,
-            options.issue.summary,
-            options.workspaces,
-          ),
-        catch: (err) => err,
-      });
+      const stashResults = yield* recoverDirtyWorkspaces(
+        options.issue.key,
+        options.issue.summary,
+        options.workspaces,
+      );
       for (const sr of stashResults) {
         if (sr.ok) {
           out.warn(

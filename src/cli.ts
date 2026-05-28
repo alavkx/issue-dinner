@@ -30,12 +30,9 @@ program
 
 const showIssue = (key: string, configPath?: string) =>
   Effect.gen(function* () {
-    yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+    yield* ensureAcli;
     yield* loadMachineConfig(configPath);
-    const issue = yield* Effect.tryPromise({
-      try: () => fetchIssue(key),
-      catch: (err) => err,
-    });
+    const issue = yield* fetchIssue(key);
     console.log(`${issue.key}: ${issue.summary} (${issue.status})\n`);
     console.log(issue.description);
     console.log("\n--- parsed ---");
@@ -45,11 +42,8 @@ const showIssue = (key: string, configPath?: string) =>
 const verifyCommand = (key: string, configPath?: string) =>
   Effect.gen(function* () {
     const machine = yield* loadMachineConfig(configPath);
-    yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
-    const issue = yield* Effect.tryPromise({
-      try: () => fetchIssue(key),
-      catch: (err) => err,
-    });
+    yield* ensureAcli;
+    const issue = yield* fetchIssue(key);
     const result = yield* verifyIssue(issue, machine);
     if (result.status === "error") process.exitCode = 2;
   }).pipe(Effect.provide(stateStoreLayer()));
@@ -58,39 +52,43 @@ program
   .command("show")
   .description("Print parsed issue body (no epic context required)")
   .argument("<key>", "Issue key e.g. CPD-636")
-  .action((key: string, _opts: unknown, cmd: Command) =>
-    Effect.runPromise(
+  .action((key: string, _opts: unknown, cmd: Command) => {
+    void Effect.runPromise(
       showIssue(key, globalConfig(cmd)).pipe(
         Effect.provide(PlatformLive),
-        Effect.catchTags({
-          ConfigNotFound: (e: ConfigNotFound) =>
-            Effect.sync(() => {
-              console.error(e.message);
-              process.exitCode = 1;
-            }),
+        Effect.catchAll((err) => {
+          if (err instanceof ConfigNotFound) {
+            console.error(err.message);
+            process.exitCode = 1;
+            return Effect.void;
+          }
+          return Effect.fail(err);
         }),
+        Effect.asVoid,
       ),
-    ),
-  );
+    );
+  });
 
 program
   .command("verify")
   .description("Re-run verify commands for one issue (uses install config)")
   .argument("<key>", "Issue key")
-  .action((key: string, _opts: unknown, cmd: Command) =>
-    Effect.runPromise(
+  .action((key: string, _opts: unknown, cmd: Command) => {
+    void Effect.runPromise(
       verifyCommand(key, globalConfig(cmd)).pipe(
         Effect.provide(PlatformLive),
-        Effect.catchTags({
-          ConfigNotFound: (e: ConfigNotFound) =>
-            Effect.sync(() => {
-              console.error(e.message);
-              process.exitCode = 1;
-            }),
+        Effect.catchAll((err) => {
+          if (err instanceof ConfigNotFound) {
+            console.error(err.message);
+            process.exitCode = 1;
+            return Effect.void;
+          }
+          return Effect.fail(err);
         }),
+        Effect.asVoid,
       ),
-    ),
-  );
+    );
+  });
 
 const mainProgram = Effect.gen(function* () {
   const argv = process.argv.slice(2);

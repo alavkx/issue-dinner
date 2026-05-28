@@ -16,3 +16,16 @@ export class MissingCursorApiKey extends Schema.TaggedError<MissingCursorApiKey>
     message: Schema.String,
   },
 ) {}
+
+/** Subprocess exited with a non-zero code. */
+export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
+  "CommandFailed",
+  {
+    command: Schema.String,
+    args: Schema.Array(Schema.String),
+    code: Schema.Number,
+    stdout: Schema.String,
+    stderr: Schema.String,
+    message: Schema.String,
+  },
+) {}

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
 import type { DinnerConfig } from "../config.js";
+import { runEffect } from "../effect/test-runtime.js";
 import { validateVerifyCommands } from "./validate.js";
 
 const config: DinnerConfig = {
@@ -29,11 +31,18 @@ const config: DinnerConfig = {
 };
 
 describe("validateVerifyCommands", () => {
-  it("flags missing test paths", () => {
-    const results = validateVerifyCommands(config, "CPD-636", ["backend"]);
-    const missing = results.find((r) => r.message.includes("missing"));
-    assert.ok(missing);
-    assert.equal(missing?.ok, false);
-    assert.ok(missing?.fix);
-  });
+  it("flags missing test paths", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const results = yield* validateVerifyCommands(
+          config,
+          "CPD-636",
+          ["backend"],
+        );
+        const missing = results.find((r) => r.message.includes("missing"));
+        assert.ok(missing);
+        assert.equal(missing?.ok, false);
+        assert.ok(missing?.fix);
+      }),
+    ));
 });

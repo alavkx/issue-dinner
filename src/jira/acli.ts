@@ -1,3 +1,5 @@
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Effect from "effect/Effect";
 import { runCommand } from "../util/exec.js";
 import { adfToMarkdown, descriptionToText } from "./adf.js";
 import { parseIssueDescription, type ParsedIssueBody } from "./parse-issue.js";
@@ -30,8 +32,14 @@ function parseIssueJson(data: AcliIssueJson): JiraIssue {
   };
 }
 
-export async function fetchIssue(key: string): Promise<JiraIssue> {
-  const { stdout } = await runCommand("acli", [
+export const fetchIssue = (
+  key: string,
+): Effect.Effect<
+  JiraIssue,
+  import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  runCommand("acli", [
     "jira",
     "workitem",
     "view",
@@ -39,56 +47,74 @@ export async function fetchIssue(key: string): Promise<JiraIssue> {
     "--fields",
     "summary,description,status",
     "--json",
-  ]);
-  return parseIssueJson(JSON.parse(stdout) as AcliIssueJson);
-}
+  ]).pipe(
+    Effect.map(({ stdout }) =>
+      parseIssueJson(JSON.parse(stdout) as AcliIssueJson),
+    ),
+  );
 
-export async function listEpicChildren(epicKey: string): Promise<JiraIssue[]> {
-  const jql = `parent = ${epicKey} ORDER BY key`;
-  const { stdout } = await runCommand("acli", [
-    "jira",
-    "workitem",
-    "search",
-    "--jql",
-    jql,
-    "--fields",
-    "key,summary,status",
-    "--json",
-  ]);
+export const listEpicChildren = (
+  epicKey: string,
+): Effect.Effect<
+  JiraIssue[],
+  import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const jql = `parent = ${epicKey} ORDER BY key`;
+    const { stdout } = yield* runCommand("acli", [
+      "jira",
+      "workitem",
+      "search",
+      "--jql",
+      jql,
+      "--fields",
+      "key,summary,status",
+      "--json",
+    ]);
 
-  const payload = JSON.parse(stdout) as Array<{ key: string }>;
+    const payload = JSON.parse(stdout) as Array<{ key: string }>;
+    const issues: JiraIssue[] = [];
+    for (const row of payload) {
+      issues.push(yield* fetchIssue(row.key));
+    }
+    return issues;
+  });
 
-  const issues: JiraIssue[] = [];
-  for (const row of payload) {
-    issues.push(await fetchIssue(row.key));
-  }
-  return issues;
-}
-
-export async function ensureAcli(): Promise<void> {
-  try {
-    await runCommand("acli", ["jira", "auth", "status"]);
-  } catch {
-    throw new Error(
-      "acli is not installed or not authenticated. Run: acli jira auth login --web",
-    );
-  }
-}
+export const ensureAcli = Effect.gen(function* () {
+  yield* runCommand("acli", ["jira", "auth", "status"]).pipe(
+    Effect.catchAll(() =>
+      Effect.fail(
+        new Error(
+          "acli is not installed or not authenticated. Run: acli jira auth login --web",
+        ),
+      ),
+    ),
+  );
+});
 
 /** Plain-text description via CLI table output (fallback). */
-export async function fetchIssuePlain(key: string): Promise<string> {
-  const { stdout } = await runCommand("acli", [
+export const fetchIssuePlain = (
+  key: string,
+): Effect.Effect<
+  string,
+  import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  runCommand("acli", [
     "jira",
     "workitem",
     "view",
     key,
     "--fields",
     "description",
-  ]);
-  const marker = "Description:";
-  const idx = stdout.indexOf(marker);
-  if (idx === -1) return stdout.trim();
-  return stdout.slice(idx + marker.length).trim();
-}
+  ]).pipe(
+    Effect.map(({ stdout }) => {
+      const marker = "Description:";
+      const idx = stdout.indexOf(marker);
+      if (idx === -1) return stdout.trim();
+      return stdout.slice(idx + marker.length).trim();
+    }),
+  );
 
 export { adfToMarkdown };

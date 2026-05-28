@@ -14,7 +14,7 @@ import {
 } from "../serve/explain.js";
 import { fg } from "../ui/theme.js";
 import * as Effect from "effect/Effect";
-import * as Either from "effect/Either";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 
 export interface PreflightIssue {
   ok: boolean;
@@ -94,7 +94,11 @@ export const runPreflight = (options: {
   checkGraphite?: boolean;
   checkTmux?: boolean;
   validateVerify?: boolean;
-}): Effect.Effect<PreflightReport, never, StateStore> =>
+}): Effect.Effect<
+  PreflightReport,
+  never,
+  StateStore | CommandExecutor.CommandExecutor
+> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const issues: PreflightIssue[] = [];
@@ -114,14 +118,14 @@ export const runPreflight = (options: {
 
     push(
       issues,
-      commandExists("acli"),
+      yield* commandExists("acli"),
       "acli on PATH",
       "Install Atlassian CLI and run: acli jira auth login --web",
     );
 
     push(
       issues,
-      commandExists("cursor"),
+      yield* commandExists("cursor"),
       "cursor CLI on PATH (local agents)",
       "Install Cursor CLI — issue-dinner runs local SDK agents, not cloud",
     );
@@ -129,7 +133,7 @@ export const runPreflight = (options: {
     if (options.checkGraphite !== false) {
       push(
         issues,
-        commandExists("gt"),
+        yield* commandExists("gt"),
         "gt (Graphite) on PATH",
         "Install Graphite CLI or use --no-prep on launch",
       );
@@ -138,7 +142,7 @@ export const runPreflight = (options: {
     if (options.checkTmux) {
       push(
         issues,
-        commandExists("tmux"),
+        yield* commandExists("tmux"),
         "tmux on PATH",
         "Install tmux or run: issue-dinner CPD-XXX serve",
       );
@@ -156,15 +160,11 @@ export const runPreflight = (options: {
       );
       if (!exists) continue;
 
-      const statusOutcome = yield* Effect.tryPromise({
-        try: () =>
-          runCommand("git", ["status", "--porcelain"], {
-            cwd,
-          }),
-        catch: (err) => err,
-      }).pipe(Effect.either);
+      const statusOutcome = yield* Effect.either(
+        runCommand("git", ["status", "--porcelain"], { cwd }),
+      );
 
-      if (Either.isLeft(statusOutcome)) {
+      if (statusOutcome._tag === "Left") {
         push(
           issues,
           false,
@@ -183,13 +183,11 @@ export const runPreflight = (options: {
           options.config,
         );
         if (issue) {
-          const recoveredOutcome = yield* Effect.tryPromise({
-            try: () =>
-              recoverDirtyWorkspace(key, cwd, issue.key, issue.summary),
-            catch: (err) => err,
-          }).pipe(Effect.either);
+          const recoveredOutcome = yield* Effect.either(
+            recoverDirtyWorkspace(key, cwd, issue.key, issue.summary),
+          );
           if (
-            Either.isRight(recoveredOutcome) &&
+            recoveredOutcome._tag === "Right" &&
             recoveredOutcome.right.ok
           ) {
             clean = true;
@@ -212,15 +210,13 @@ export const runPreflight = (options: {
       push(issues, true, `${key}: working tree clean`);
     }
 
-    if (options.checkGraphite !== false && commandExists("gt")) {
+    if (options.checkGraphite !== false && (yield* commandExists("gt"))) {
       for (const [key, cwd] of Object.entries(options.config.workspaces)) {
         if (!existsSync(cwd)) continue;
-        const gtOutcome = yield* Effect.tryPromise({
-          try: () =>
-            runCommand("gt", ["log", "short", "--cwd", cwd], { cwd }),
-          catch: (err) => err,
-        }).pipe(Effect.either);
-        if (Either.isLeft(gtOutcome)) {
+        const gtOutcome = yield* Effect.either(
+          runCommand("gt", ["log", "short", "--cwd", cwd], { cwd }),
+        );
+        if (gtOutcome._tag === "Left") {
           push(
             issues,
             false,
@@ -252,7 +248,7 @@ export const runPreflight = (options: {
           issue.description,
           issue.summary,
         );
-        const validation = validateVerifyCommands(
+        const validation = yield* validateVerifyCommands(
           options.config,
           issue.key,
           roots.keys,

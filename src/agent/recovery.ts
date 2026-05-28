@@ -220,7 +220,11 @@ const tryProgrammaticStackRecovery = (options: {
   issue: JiraIssue;
   config: DinnerConfig;
   transcript?: Transcript;
-}): Effect.Effect<boolean, unknown, StateStore> =>
+}): Effect.Effect<
+  boolean,
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const roots = resolveIssueWorkspaces(
       options.config,
@@ -232,15 +236,11 @@ const tryProgrammaticStackRecovery = (options: {
       key,
       cwd: roots.cwds[i]!,
     }));
-    const results = yield* Effect.tryPromise({
-      try: () =>
-        recoverDirtyWorkspaces(
-          options.issue.key,
-          options.issue.summary,
-          workspaces,
-        ),
-      catch: (err) => err,
-    });
+    const results = yield* recoverDirtyWorkspaces(
+      options.issue.key,
+      options.issue.summary,
+      workspaces,
+    );
     const ok = results.every((r) => r.ok);
     if (ok && results.some((r) => r.action !== "already_clean")) {
       yield* recordStep(
@@ -258,7 +258,11 @@ export const checkoutWithRecovery = (options: {
   stack: StackConfig;
   apiKey: string;
   transcript?: Transcript;
-}): Effect.Effect<StackActionSummary[], unknown, StateStore> =>
+}): Effect.Effect<
+  StackActionSummary[],
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
   Effect.gen(function* () {
     const port = createGraphiteStackPort();
 

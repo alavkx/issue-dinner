@@ -1,3 +1,6 @@
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Effect from "effect/Effect";
+import { CommandFailed } from "../effect/errors.js";
 import { runCommand } from "../util/exec.js";
 
 export interface WorkspaceGitState {
@@ -8,44 +11,52 @@ export interface WorkspaceGitState {
   diffStat: string;
 }
 
-export async function gitCurrentBranch(cwd: string): Promise<string> {
-  const { stdout } = await runCommand(
-    "git",
-    ["branch", "--show-current"],
-    { cwd },
+export const gitCurrentBranch = (
+  cwd: string,
+): Effect.Effect<
+  string,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  runCommand("git", ["branch", "--show-current"], { cwd }).pipe(
+    Effect.map(({ stdout }) => stdout.trim() || "(detached)"),
   );
-  return stdout.trim() || "(detached)";
-}
 
-export async function gitDiffStat(cwd: string): Promise<string> {
-  try {
-    const { stdout } = await runCommand("git", ["diff", "--stat", "HEAD"], {
-      cwd,
-    });
-    return stdout.trim();
-  } catch {
-    return "";
-  }
-}
+export const gitDiffStat = (
+  cwd: string,
+): Effect.Effect<string, never, CommandExecutor.CommandExecutor> =>
+  runCommand("git", ["diff", "--stat", "HEAD"], { cwd }).pipe(
+    Effect.map(({ stdout }) => stdout.trim()),
+    Effect.catchAll(() => Effect.succeed("")),
+  );
 
-export async function gitIsDirty(cwd: string): Promise<boolean> {
-  const { stdout } = await runCommand("git", ["status", "--porcelain"], {
-    cwd,
-  });
-  return stdout.trim().length > 0;
-}
+export const gitIsDirty = (
+  cwd: string,
+): Effect.Effect<
+  boolean,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  runCommand("git", ["status", "--porcelain"], { cwd }).pipe(
+    Effect.map(({ stdout }) => stdout.trim().length > 0),
+  );
 
-export async function collectWorkspaceGitState(
+export const collectWorkspaceGitState = (
   workspaceKey: string,
   cwd: string,
-): Promise<WorkspaceGitState> {
-  const [branch, dirty, diffStat] = await Promise.all([
-    gitCurrentBranch(cwd),
-    gitIsDirty(cwd),
-    gitDiffStat(cwd),
-  ]);
-  return { workspaceKey, cwd, branch, dirty, diffStat };
-}
+): Effect.Effect<
+  WorkspaceGitState,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const [branch, dirty, diffStat] = yield* Effect.all([
+      gitCurrentBranch(cwd),
+      gitIsDirty(cwd),
+      gitDiffStat(cwd),
+    ]);
+    return { workspaceKey, cwd, branch, dirty, diffStat };
+  });
 
 export interface CommitResult {
   workspaceKey: string;
@@ -57,39 +68,55 @@ export interface CommitResult {
   error?: string;
 }
 
-export async function commitWorkspaceWip(
+export const commitWorkspaceWip = (
   workspaceKey: string,
   cwd: string,
   issueKey: string,
   summary: string,
-): Promise<CommitResult> {
-  const branch = await gitCurrentBranch(cwd);
-  const dirty = await gitIsDirty(cwd);
-  if (!dirty) {
-    return { workspaceKey, cwd, branch, committed: false };
-  }
+): Effect.Effect<
+  CommitResult,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const branch = yield* gitCurrentBranch(cwd);
+    const dirty = yield* gitIsDirty(cwd);
+    if (!dirty) {
+      return { workspaceKey, cwd, branch, committed: false };
+    }
 
-  const subject = summary.replace(/\s+/g, " ").slice(0, 72);
-  const message = `feat(${issueKey.toLowerCase()}): ${subject}`;
+    const subject = summary.replace(/\s+/g, " ").slice(0, 72);
+    const message = `feat(${issueKey.toLowerCase()}): ${subject}`;
 
-  try {
-    await runCommand("git", ["add", "-A"], { cwd });
-    await runCommand("git", ["commit", "-m", message], { cwd });
-    const { stdout } = await runCommand(
-      "git",
-      ["rev-parse", "--short", "HEAD"],
-      { cwd },
+    const outcome = yield* Effect.either(
+      Effect.gen(function* () {
+        yield* runCommand("git", ["add", "-A"], { cwd });
+        yield* runCommand("git", ["commit", "-m", message], { cwd });
+        const { stdout } = yield* runCommand(
+          "git",
+          ["rev-parse", "--short", "HEAD"],
+          { cwd },
+        );
+        return {
+          workspaceKey,
+          cwd,
+          branch,
+          committed: true as const,
+          sha: stdout.trim(),
+          message,
+        };
+      }),
     );
-    return {
-      workspaceKey,
-      cwd,
-      branch,
-      committed: true,
-      sha: stdout.trim(),
-      message,
-    };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+
+    if (outcome._tag === "Right") return outcome.right;
+
+    const msg =
+      outcome.left instanceof CommandFailed
+        ? outcome.left.message
+        : outcome.left instanceof Error
+          ? outcome.left.message
+          : String(outcome.left);
+
     return {
       workspaceKey,
       cwd,
@@ -97,19 +124,23 @@ export async function commitWorkspaceWip(
       committed: false,
       error: msg,
     };
-  }
-}
+  });
 
-export async function commitCourseWip(
+export const commitCourseWip = (
   issueKey: string,
   summary: string,
   workspaces: Array<{ key: string; cwd: string }>,
-): Promise<CommitResult[]> {
-  const results: CommitResult[] = [];
-  for (const ws of workspaces) {
-    results.push(
-      await commitWorkspaceWip(ws.key, ws.cwd, issueKey, summary),
-    );
-  }
-  return results;
-}
+): Effect.Effect<
+  CommitResult[],
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const results: CommitResult[] = [];
+    for (const ws of workspaces) {
+      results.push(
+        yield* commitWorkspaceWip(ws.key, ws.cwd, issueKey, summary),
+      );
+    }
+    return results;
+  });

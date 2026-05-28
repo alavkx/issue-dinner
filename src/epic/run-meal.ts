@@ -6,7 +6,7 @@ import {
   verifyIssue,
 } from "../agent/runner.js";
 import { cursorApiKey } from "../env.js";
-import { ConfigNotFound } from "../effect/errors.js";
+import { ConfigNotFound, type MissingCursorApiKey } from "../effect/errors.js";
 import {
   assertPreflight,
   formatPreflightReport,
@@ -36,8 +36,8 @@ import { storyBranchName } from "../stack/names.js";
 import { commandExists, shellQuote } from "../util/exec.js";
 import { assertMealCommand } from "./parse-argv.js";
 import { createMeal, mergeExclude, type EpicMeal } from "./meal.js";
-import type { MissingCursorApiKey } from "../effect/errors.js";
 import type { JiraIssue } from "../jira/acli.js";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 
 function buildServeInvocation(
   epic: string,
@@ -80,12 +80,9 @@ function hasFlag(args: string[], name: string): boolean {
 const menuIssues = (
   meal: EpicMeal,
   excludeCsv?: string,
-): Effect.Effect<JiraIssue[], unknown> =>
+): Effect.Effect<JiraIssue[], unknown, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
-    const children = yield* Effect.tryPromise({
-      try: () => listEpicChildren(meal.epic),
-      catch: (err) => err,
-    });
+    const children = yield* listEpicChildren(meal.epic);
     return filterMenuIssues(children, {
       exclude: mergeExclude(meal, excludeCsv),
     });
@@ -100,7 +97,7 @@ const runMealPreflight = (
     checkTmux?: boolean;
     validateVerify?: boolean;
   },
-): Effect.Effect<void, never, StateStore> =>
+): Effect.Effect<void, never, StateStore | CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     const report = yield* runPreflight({
       config: meal.machine,
@@ -143,7 +140,11 @@ const runMealWithStore = (
   meal: EpicMeal,
   argv: string[],
   configPath?: string,
-): Effect.Effect<void, MissingCursorApiKey | unknown, StateStore> =>
+): Effect.Effect<
+  void,
+  MissingCursorApiKey | unknown,
+  StateStore | CommandExecutor.CommandExecutor
+> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const command = assertMealCommand(argv[0]);
@@ -151,7 +152,7 @@ const runMealWithStore = (
 
     switch (command) {
       case "list": {
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+        yield* ensureAcli;
         const issues = yield* menuIssues(meal, flagValue(args, "--exclude"));
         console.log(`Epic ${meal.epic} — ${issues.length} stories\n`);
         for (const issue of issues) {
@@ -168,7 +169,7 @@ const runMealWithStore = (
         return;
       }
       case "status": {
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+        yield* ensureAcli;
         const issues = yield* menuIssues(meal);
         const verbose = hasFlag(args, "--verbose");
         for (const issue of issues) {
@@ -211,10 +212,10 @@ const runMealWithStore = (
         return;
       }
       case "prep": {
-        if (!commandExists("gt")) {
+        if (!(yield* commandExists("gt"))) {
           throw new Error("gt (Graphite) is not on PATH");
         }
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+        yield* ensureAcli;
         const issues = yield* menuIssues(meal, flagValue(args, "--exclude"));
         if (hasFlag(args, "--dry-run")) {
           const plans = buildEpicStackPlans(
@@ -260,12 +261,9 @@ const runMealWithStore = (
         return;
       }
       case "serve": {
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+        yield* ensureAcli;
         const exclude = mergeExclude(meal, flagValue(args, "--exclude"));
-        const children = yield* Effect.tryPromise({
-          try: () => listEpicChildren(meal.epic),
-          catch: (err) => err,
-        });
+        const children = yield* listEpicChildren(meal.epic);
         const issues = sortByDependencies(
           filterMenuIssues(children, {
             exclude,
@@ -465,13 +463,11 @@ const runMealWithStore = (
               }
             }
 
-            const clean = yield* Effect.tryPromise({
-              try: () =>
-                ensureWorkspacesCleanForIssue(meal.machine, issue, {
-                  label: "before next course",
-                }),
-              catch: (err) => err,
-            });
+            const clean = yield* ensureWorkspacesCleanForIssue(
+              meal.machine,
+              issue,
+              { label: "before next course" },
+            );
             if (!clean.ok) {
               failures += 1;
               const reason =
@@ -521,7 +517,7 @@ const runMealWithStore = (
         const noPrep = hasFlag(args, "--no-prep");
         const skipPreflight = hasFlag(args, "--skip-preflight");
 
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
+        yield* ensureAcli;
         const issues = yield* menuIssues(meal, exclude);
 
         if (!skipPreflight) {
@@ -532,7 +528,7 @@ const runMealWithStore = (
         }
 
         if (!noPrep && !dryRun) {
-          if (!commandExists("gt")) {
+          if (!(yield* commandExists("gt"))) {
             throw new Error(
               "gt (Graphite) is not on PATH — use --no-prep to skip",
             );
@@ -610,16 +606,16 @@ const runMealWithStore = (
           );
         }
         const cookArgs = args.slice(1);
-        yield* Effect.tryPromise({ try: () => ensureAcli(), catch: (e) => e });
-        if (!hasFlag(cookArgs, "--dry-run") && !commandExists("cursor")) {
+        yield* ensureAcli;
+        if (
+          !hasFlag(cookArgs, "--dry-run") &&
+          !(yield* commandExists("cursor"))
+        ) {
           console.warn(
             "Warning: `cursor` CLI not found on PATH; local SDK agents require it.",
           );
         }
-        const issue = yield* Effect.tryPromise({
-          try: () => fetchIssue(key),
-          catch: (err) => err,
-        });
+        const issue = yield* fetchIssue(key);
         const dryRun = hasFlag(cookArgs, "--dry-run");
         if (!hasFlag(cookArgs, "--force") && !dryRun) {
           const gate = yield* store.canProcess(key, issue.parsed.blockedBy);
@@ -649,7 +645,7 @@ export const runMealArgv = (
 ): Effect.Effect<
   void,
   ConfigNotFound | MissingCursorApiKey | unknown,
-  FileSystem.FileSystem
+  FileSystem.FileSystem | CommandExecutor.CommandExecutor
 > =>
   Effect.gen(function* () {
     const meal = yield* createMeal(epic, { configPath });

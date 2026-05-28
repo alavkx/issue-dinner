@@ -1,16 +1,26 @@
+import { PlatformLive } from "../effect/layers.js";
+import * as Effect from "effect/Effect";
 import { runCommand } from "../util/exec.js";
 import type { GraphiteStackPort } from "./graphite-port.js";
 
+const runCmd = <A, E>(
+  program: Effect.Effect<
+    A,
+    E,
+    import("@effect/platform/CommandExecutor").CommandExecutor
+  >,
+): Promise<A> => Effect.runPromise(program.pipe(Effect.provide(PlatformLive)));
+
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await runCommand("git", args, { cwd });
+  const { stdout } = await runCmd(runCommand("git", args, { cwd }));
   return stdout.trim();
 }
 
 async function gt(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await runCommand(
-    "gt",
-    ["--no-interactive", "-q", "--cwd", cwd, ...args],
-    { cwd },
+  const { stdout } = await runCmd(
+    runCommand("gt", ["--no-interactive", "-q", "--cwd", cwd, ...args], {
+      cwd,
+    }),
   );
   return stdout.trim();
 }
