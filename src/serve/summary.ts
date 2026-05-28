@@ -4,6 +4,7 @@ import { StateStore } from "../state/store.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import { storyBranchName } from "../stack/names.js";
 import { serveLogPath } from "./log.js";
+import * as FileSystem from "@effect/platform/FileSystem";
 import { sessionHistoryPath } from "./transcript.js";
 import { explainCourseFailure, isResolutionNoise } from "./explain.js";
 import {
@@ -126,11 +127,11 @@ export function printServeHalt(halt: ServeHaltInfo, epic: string): void {
 
 export const printServeSummary = (
   options: ServeSummaryOptions,
-): Effect.Effect<void, never, StateStore> =>
+): Effect.Effect<void, import("@effect/platform/Error").PlatformError, StateStore | FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     const { epic, stack, issues, held, skipped } = options;
-    const logPath = options.logPath ?? serveLogPath(epic);
+    const logPath = options.logPath ?? (yield* serveLogPath(epic));
     const counts = yield* countByStatus(issues);
     counts.held = held.length;
     counts.skipped += skipped.length;

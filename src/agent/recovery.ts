@@ -30,6 +30,8 @@ import {
   type RecoveryKind,
 } from "./recovery-prompt.js";
 import type { Transcript } from "../serve/transcript.js";
+import { appendTranscript, appendTranscriptBlock, appendTranscriptLine } from "../serve/transcript.js";
+import * as FileSystem from "@effect/platform/FileSystem";
 import * as Effect from "effect/Effect";
 
 export interface RecoveryResult {
@@ -45,11 +47,11 @@ const recordStep = (
   issueKey: string,
   step: string,
   transcript?: Transcript,
-): Effect.Effect<void, never, StateStore> =>
+): Effect.Effect<void, import("@effect/platform/Error").PlatformError, StateStore | FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
     yield* store.appendResolutionStep(issueKey, step);
-    transcript?.appendLine(step);
+    if (transcript) yield* appendTranscriptLine(transcript, step);
   });
 
 export const runRecoveryAgent = (options: {
@@ -62,7 +64,11 @@ export const runRecoveryAgent = (options: {
   verifyOutput?: string;
   transcript?: Transcript;
   resumeAgentId?: string;
-}): Effect.Effect<RecoveryResult, never, StateStore> =>
+}): Effect.Effect<
+  RecoveryResult,
+  import("@effect/platform/Error").PlatformError,
+  StateStore | FileSystem.FileSystem
+> =>
   Effect.gen(function* () {
     const max = options.config.recoveryAttempts ?? 2;
     const local = localAgentOptions(options.config, options.roots.cwds);
@@ -111,7 +117,9 @@ export const runRecoveryAgent = (options: {
             writeStderr: quietRecovery
               ? () => {}
               : (t: string) => process.stderr.write(t),
-            transcript: (t: string) => options.transcript?.append(t),
+            appendTranscript: options.transcript
+              ? (t: string) => appendTranscript(options.transcript!, t)
+              : undefined,
           };
           const drain = yield* drainRunStream(run.stream(), sink);
 
@@ -206,7 +214,9 @@ const tryProgrammaticStackRecovery = (options: {
 }): Effect.Effect<
   boolean,
   unknown,
-  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const roots = resolveIssueWorkspaces(
@@ -244,7 +254,9 @@ export const checkoutWithRecovery = (options: {
 }): Effect.Effect<
   StackActionSummary[],
   unknown,
-  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const port = createGraphiteStackPort();
@@ -285,7 +297,13 @@ export const checkoutWithRecovery = (options: {
           }
 
           out.error(`Stack prep failed: ${detail}`);
-          options.transcript?.appendBlock("stack prep failed", detail);
+          if (options.transcript) {
+            yield* appendTranscriptBlock(
+              options.transcript,
+              "stack prep failed",
+              detail,
+            );
+          }
           yield* recordStep(
             options.issue.key,
             `Stack prep failed: ${detail.slice(0, 300)}`,

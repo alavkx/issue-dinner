@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as FileSystem from "@effect/platform/FileSystem";
 import * as Effect from "effect/Effect";
 import { cursorApiKeyEnvName } from "../env.js";
 import { TmuxNotFound } from "../effect/errors.js";
-import { formatAttachReplay } from "../serve/transcript.js";
-import { sessionHistoryPath } from "../serve/transcript.js";
+import { formatAttachReplay, sessionHistoryPath } from "../serve/transcript.js";
 import { commandExists, commandExitCode, shellQuote } from "../util/exec.js";
 
 export interface LaunchOptions {
@@ -47,6 +47,7 @@ export function buildLaunchShellCommand(
   innerCommand: string,
   apiKey: string,
   epic?: string,
+  replayText?: string,
 ): string {
   const apiEnv = cursorApiKeyEnvName();
   if (!apiKey.trim()) {
@@ -56,9 +57,10 @@ export function buildLaunchShellCommand(
   const historyHint = epic
     ? `echo "Session history: ${sessionHistoryPath(epic)}"`
     : "true";
-  const replay = epic
-    ? `printf %s ${shellQuote(formatAttachReplay(epic, 60))}`
-    : "true";
+  const replay =
+    epic && replayText
+      ? `printf %s ${shellQuote(replayText)}`
+      : "true";
   return [
     `export ${apiEnv}=${shellQuote(apiKey.trim())}`,
     historyHint,
@@ -107,13 +109,21 @@ const createTmuxSession = (
 
 export const launchInTmux = (
   opts: LaunchOptions,
-): Effect.Effect<void, TmuxNotFound, CommandExecutor.CommandExecutor> =>
+): Effect.Effect<
+  void,
+  TmuxNotFound | import("@effect/platform/Error").PlatformError,
+  CommandExecutor.CommandExecutor | FileSystem.FileSystem
+> =>
   Effect.gen(function* () {
     yield* ensureTmux();
+    const replayText = opts.epic
+      ? yield* formatAttachReplay(opts.epic, 60)
+      : undefined;
     const shellCmd = buildLaunchShellCommand(
       opts.innerCommand,
       opts.apiKey,
       opts.epic,
+      replayText,
     );
     const detach = opts.detach ?? false;
 

@@ -20,7 +20,7 @@ import {
   stateStoreLayerForEpic,
   StateStore,
 } from "../paths.js";
-import { ServeLogger } from "../serve/log.js";
+import { openServeLogger, type ServeLogger } from "../serve/log.js";
 import type { ServeHaltInfo } from "../serve/failures.js";
 import { menuOrderBlocks } from "../serve/menu-gate.js";
 import { printServeSummary } from "../serve/summary.js";
@@ -143,7 +143,7 @@ const runMealWithStore = (
 ): Effect.Effect<
   void,
   MissingCursorApiKey | unknown,
-  StateStore | CommandExecutor.CommandExecutor
+  StateStore | CommandExecutor.CommandExecutor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -321,7 +321,7 @@ const runMealWithStore = (
         let logger: ServeLogger | undefined;
         if (!dryRun) {
           yield* store.setEpic(meal.epic);
-          logger = ServeLogger.open(meal.epic);
+          logger = yield* openServeLogger(meal.epic);
           logger.attach();
           console.log(`Logging to ${logger.logPath}\n`);
         }

@@ -7,6 +7,7 @@ import {
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
+import * as FileSystem from "@effect/platform/FileSystem";
 import { CommandFailed } from "../effect/errors.js";
 import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
 import {
@@ -41,7 +42,13 @@ import {
   isSdkCanceledError,
 } from "./sdk-errors.js";
 import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
-import { Transcript } from "../serve/transcript.js";
+import {
+  appendTranscript,
+  appendTranscriptBlock,
+  appendTranscriptLine,
+  openTranscript,
+  type Transcript,
+} from "../serve/transcript.js";
 import * as out from "../ui/out.js";
 import * as Effect from "effect/Effect";
 
@@ -222,7 +229,9 @@ export const processIssue = (
 ): Effect.Effect<
   ProcessResult,
   unknown,
-  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -235,9 +244,11 @@ export const processIssue = (
     const ws = stateWorkspaceFields(roots);
     const prompt = buildAgentPrompt({ issue, roots, config });
     const transcript = options.epic
-      ? new Transcript(options.epic, issue.key)
+      ? yield* openTranscript(options.epic, issue.key)
       : undefined;
-    transcript?.appendLine(`Course start: ${issue.summary}`);
+    if (transcript) {
+      yield* appendTranscriptLine(transcript, `Course start: ${issue.summary}`);
+    }
 
     let branches: Record<string, string> = {};
     if (options.stack && !options.dryRun) {
@@ -298,9 +309,12 @@ export const processIssue = (
       for (const row of stackOutcome.actions) {
         if (row.action === "noop") continue;
         out.info(`stack ${row.workspace}: ${row.action} → ${row.branch}`);
-        transcript?.appendLine(
-          `stack ${row.workspace}: ${row.action} → ${row.branch}`,
-        );
+        if (transcript) {
+          yield* appendTranscriptLine(
+            transcript,
+            `stack ${row.workspace}: ${row.action} → ${row.branch}`,
+          );
+        }
       }
       branches = yield* recordBranches(roots);
     } else if (!options.dryRun) {
@@ -328,7 +342,12 @@ export const processIssue = (
     out.info(formatWorkspacesLabel(roots));
     const local = localAgentOptions(config, roots.cwds);
     out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
-    transcript?.appendLine(`agent local cwd=${JSON.stringify(local.cwd)}`);
+    if (transcript) {
+      yield* appendTranscriptLine(
+        transcript,
+        `agent local cwd=${JSON.stringify(local.cwd)}`,
+      );
+    }
 
     const agentResult = yield* withAgent(
       createOrResumeAgent({
@@ -343,14 +362,20 @@ export const processIssue = (
         Effect.gen(function* () {
         const run = yield* sendPrompt(agent, prompt);
         out.phase("stream", `agentId=${agent.agentId} runId=${run.id}`);
-        transcript?.appendLine(`agentId=${agent.agentId} runId=${run.id}`);
-
+        if (transcript) {
+          yield* appendTranscriptLine(
+            transcript,
+            `agentId=${agent.agentId} runId=${run.id}`,
+          );
+        }
         let streamCanceled = false;
         if (options.stream !== false) {
           const sink = {
             writeStdout: (t: string) => process.stdout.write(t),
             writeStderr: (t: string) => process.stderr.write(t),
-            transcript: (t: string) => transcript?.append(t),
+            appendTranscript: transcript
+              ? (t: string) => appendTranscript(transcript, t)
+              : undefined,
           };
           const drain = yield* drainRunStream(run.stream(), sink);
           streamCanceled = drain.canceled;
@@ -791,7 +816,9 @@ export const processIssue = (
                 ? err.message
                 : String(err);
 
-          transcript?.appendBlock("fatal error", message);
+          if (transcript) {
+            yield* appendTranscriptBlock(transcript, "fatal error", message);
+          }
           yield* store.appendResolutionStep(issue.key, message.slice(0, 300));
           yield* store.upsert({
             issueKey: issue.key,
@@ -859,7 +886,7 @@ const commitCourseWithRecovery = (options: {
 }): Effect.Effect<
   Record<string, string>,
   unknown,
-  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
