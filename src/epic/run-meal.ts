@@ -346,6 +346,15 @@ const runMealWithStore = (
           process.once("SIGINT", sigintHandler);
         }
 
+        let logger: ServeLogger | undefined;
+        const serveStartedAt = new Date().toISOString();
+        if (!dryRun) {
+          yield* store.setEpic(meal.epic);
+          logger = yield* openServeLogger(meal.epic);
+          logger.attach();
+          console.log(`Logging to ${logger.logPath}\n`);
+        }
+
         out.banner(`Issue dinner — ${meal.epic} (${issues.length} courses)`);
         if (selfHeal) {
           out.info(`Self-heal active (${kitchenRoot})`);
@@ -367,17 +376,10 @@ const runMealWithStore = (
           }
         }
 
-        let logger: ServeLogger | undefined;
-        if (!dryRun) {
-          yield* store.setEpic(meal.epic);
-          logger = yield* openServeLogger(meal.epic);
-          logger.attach();
-          console.log(`Logging to ${logger.logPath}\n`);
-        }
-
         let failures = 0;
         const held: Array<{ key: string; reason: string }> = [];
         const skipped: string[] = [];
+        const cookedThisSession: string[] = [];
         const skippedSet = new Set<string>();
         let halt: ServeHaltInfo | undefined;
 
@@ -467,6 +469,8 @@ const runMealWithStore = (
               yield* clearHealResume();
               out.info(`${issue.key}: resuming after issue-dinner self-heal`);
             }
+
+            cookedThisSession.push(issue.key);
 
             const result = yield* processIssue(
               issue,
@@ -596,6 +600,12 @@ const runMealWithStore = (
                 );
               }
             }
+
+            const pendingHealContributions =
+              selfHeal && kitchenRoot
+                ? yield* listPendingContributions(kitchenRoot)
+                : undefined;
+
             yield* printServeSummary({
               epic: meal.epic,
               stack: meal.stack,
@@ -604,6 +614,13 @@ const runMealWithStore = (
               skipped,
               logPath: logger?.logPath,
               halt,
+              session: {
+                serveStartedAt,
+                selfHeal,
+                cookedThisSession,
+                skippedAlreadyVerified: skipped,
+                pendingHealContributions,
+              },
             });
             logger?.close();
           }
