@@ -1,5 +1,5 @@
-import { Agent, CursorAgentError } from "@cursor/sdk";
-import type { DinnerConfig } from "../config.js";
+import { CursorAgentError } from "@cursor/sdk";
+import type { MachineConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
   formatWorkspacesLabel,
@@ -7,6 +7,8 @@ import {
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
+import * as FileSystem from "@effect/platform/FileSystem";
+import { CommandFailed } from "../effect/errors.js";
 import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
 import {
   commitCourseWip,
@@ -15,7 +17,7 @@ import {
   type CommitResult,
 } from "../git/workspace.js";
 import type { JiraIssue } from "../jira/acli.js";
-import type { StateStore } from "../state/store.js";
+import { StateStore } from "../state/store.js";
 import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
 import {
   filterVerifyCommandsForServe,
@@ -30,13 +32,25 @@ import { buildAgentPrompt } from "./prompt.js";
 import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
 import { drainRunStream } from "./stream-handler.js";
 import {
+  createOrResumeAgent,
+  sendPrompt,
+  waitForRun,
+  withAgent,
+} from "./lifecycle.js";
+import {
   formatAgentError,
   isSdkCanceledError,
-  safeDisposeAgent,
 } from "./sdk-errors.js";
 import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
-import { Transcript } from "../serve/transcript.js";
+import {
+  appendTranscript,
+  appendTranscriptBlock,
+  appendTranscriptLine,
+  openTranscript,
+  type Transcript,
+} from "../serve/transcript.js";
 import * as out from "../ui/out.js";
+import * as Effect from "effect/Effect";
 
 export interface ProcessOptions {
   dryRun?: boolean;
@@ -67,575 +81,609 @@ function stateWorkspaceFields(roots: IssueWorkspaces): {
   };
 }
 
-async function recordBranches(
+const recordBranches = (
   roots: IssueWorkspaces,
-): Promise<Record<string, string>> {
-  const branches: Record<string, string> = {};
-  for (let i = 0; i < roots.keys.length; i++) {
-    branches[roots.keys[i]!] = await gitCurrentBranch(roots.cwds[i]!);
-  }
-  return branches;
-}
-
-export async function runVerifyPhase(
-  issue: JiraIssue,
-  config: DinnerConfig,
-  roots: IssueWorkspaces,
-  options: { gate?: "inner" | "full" } = {},
-): Promise<{ ok: boolean; error?: string; output: string }> {
-  if (!config.requireVerify) {
-    return { ok: true, output: "(verify disabled in config)" };
-  }
-
-  const gate =
-    options.gate === "full"
-      ? "full"
-      : config.serveVerifyGate === "none"
-        ? "none"
-        : config.serveVerifyGate;
-
-  const all = resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
-  const commands = filterVerifyCommandsForServe(all, gate);
-  if (commands.length === 0 && all.length > 0 && gate === "inner") {
-    return {
-      ok: true,
-      output: `(inner verify gate: skipped ${all.length} outer-tier command(s))`,
-    };
-  }
-  if (commands.length === 0 && gate === "inner") {
-    return {
-      ok: true,
-      output:
-        all.length > 0
-          ? `(quick checks skipped — only slow tests are configured for ${issue.key})`
-          : `(no automated quick checks for ${issue.key} — continuing serve)`,
-    };
-  }
-  if (commands.length === 0) {
-    return {
-      ok: false,
-      output: "",
-      error: `No verify commands for ${issue.key} (roots: ${roots.keys.join(", ")})`,
-    };
-  }
-
-  out.phase(
-    "verify",
-    `${issue.key} — ${commands.length} command(s), ${roots.keys.length} root(s)`,
-  );
-  const result = await runVerifyCommands(commands);
-  if (!result.ok) {
-    const detail = result.failures.map((f) => f.name).join(", ");
-    return {
-      ok: false,
-      output: result.output,
-      error: `Verify failed: ${detail}`,
-    };
-  }
-  return { ok: true, output: result.output };
-}
-
-export async function verifyIssue(
-  issue: JiraIssue,
-  config: DinnerConfig,
-  store: StateStore,
-): Promise<ProcessResult> {
-  const roots = resolveIssueWorkspaces(
-    config,
-    issue.key,
-    issue.description,
-    issue.summary,
-  );
-  const ws = stateWorkspaceFields(roots);
-  const rec = store.get(issue.key);
-
-  const verify = await runVerifyPhase(issue, config, roots);
-  if (!verify.ok) {
-    store.upsert({
-      issueKey: issue.key,
-      summary: issue.summary,
-      status: rec?.handoffStatus ? "agent_complete" : "error",
-      ...ws,
-      verifyError: verify.error,
-      error: rec?.handoffStatus ? undefined : verify.error,
-      verifyOutput: verify.output.slice(0, 2000),
-      finishedAt: new Date().toISOString(),
-      branches: rec?.branches,
-      commits: rec?.commits,
-      handoffStatus: rec?.handoffStatus,
-      handoffVerification: rec?.handoffVerification,
-    });
-    return {
-      issueKey: issue.key,
-      status: rec?.handoffStatus ? "agent_complete" : "error",
-      error: verify.error,
-    };
-  }
-
-  store.upsert({
-    issueKey: issue.key,
-    summary: issue.summary,
-    status: "verified",
-    ...ws,
-    agentId: rec?.agentId,
-    runId: rec?.runId,
-    handoffStatus: rec?.handoffStatus,
-    handoffVerification: rec?.handoffVerification,
-    verifyOutput: verify.output.slice(0, 2000),
-    finishedAt: new Date().toISOString(),
-    resultPreview: rec?.resultPreview,
-    branches: rec?.branches,
-    commits: rec?.commits,
+): Effect.Effect<
+  Record<string, string>,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
+  Effect.gen(function* () {
+    const branches: Record<string, string> = {};
+    for (let i = 0; i < roots.keys.length; i++) {
+      branches[roots.keys[i]!] = yield* gitCurrentBranch(roots.cwds[i]!);
+    }
+    return branches;
   });
 
-  out.success(`${issue.key} verified`);
-  return { issueKey: issue.key, status: "verified" };
-}
-
-export async function processIssue(
+export const runVerifyPhase = (
   issue: JiraIssue,
-  config: DinnerConfig,
-  store: StateStore,
-  apiKey: string,
-  options: ProcessOptions = {},
-): Promise<ProcessResult> {
-  const roots = resolveIssueWorkspaces(
-    config,
-    issue.key,
-    issue.description,
-    issue.summary,
-  );
-  const ws = stateWorkspaceFields(roots);
-  const prompt = buildAgentPrompt({ issue, roots, config });
-  const transcript = options.epic
-    ? new Transcript(options.epic, issue.key)
-    : undefined;
-  transcript?.appendLine(`Course start: ${issue.summary}`);
-
-  let branches: Record<string, string> = {};
-  if (options.stack && !options.dryRun) {
-    const clean = await ensureWorkspacesCleanForIssue(config, issue, {
-      label: "stack prep",
-    });
-    if (!clean.ok) {
-      const msg = clean.detail ?? "workspace not clean for stack prep";
-      store.appendResolutionStep(issue.key, `Stack prep blocked: ${msg}`);
-      store.upsert({
-        issueKey: issue.key,
-        summary: issue.summary,
-        status: "error",
-        ...ws,
-        finishedAt: new Date().toISOString(),
-        error: msg,
-        transcriptPath: transcript?.path,
-      });
-      out.error(`${issue.key}: ${msg}`);
-      return { issueKey: issue.key, status: "error", error: msg };
+  config: MachineConfig,
+  roots: IssueWorkspaces,
+  options: { gate?: "inner" | "full" } = {},
+): Effect.Effect<
+  { ok: boolean; error?: string; output: string },
+  import("@effect/platform/Error").PlatformError,
+  import("@effect/platform/CommandExecutor").CommandExecutor | FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    if (!config.requireVerify) {
+      return { ok: true, output: "(verify disabled in config)" };
     }
 
-    try {
-      const stackActions = await checkoutWithRecovery({
+    const gate =
+      options.gate === "full"
+        ? "full"
+        : config.serveVerifyGate === "none"
+          ? "none"
+          : config.serveVerifyGate;
+
+    const all = yield* resolveVerifyCommandsForIssue(config, issue.key, roots.keys);
+    const commands = filterVerifyCommandsForServe(all, gate);
+    if (commands.length === 0 && all.length > 0 && gate === "inner") {
+      return {
+        ok: true,
+        output: `(inner verify gate: skipped ${all.length} outer-tier command(s))`,
+      };
+    }
+    if (commands.length === 0 && gate === "inner") {
+      return {
+        ok: true,
+        output:
+          all.length > 0
+            ? `(quick checks skipped — only slow tests are configured for ${issue.key})`
+            : `(no automated quick checks for ${issue.key} — continuing serve)`,
+      };
+    }
+    if (commands.length === 0) {
+      return {
+        ok: false,
+        output: "",
+        error: `No verify commands for ${issue.key} (roots: ${roots.keys.join(", ")})`,
+      };
+    }
+
+    out.phase(
+      "verify",
+      `${issue.key} — ${commands.length} command(s), ${roots.keys.length} root(s)`,
+    );
+    const result = yield* runVerifyCommands(commands);
+    if (!result.ok) {
+      const detail = result.failures.map((f) => f.name).join(", ");
+      return {
+        ok: false,
+        output: result.output,
+        error: `Verify failed: ${detail}`,
+      };
+    }
+    return { ok: true, output: result.output };
+  });
+
+export const verifyIssue = (
+  issue: JiraIssue,
+  config: MachineConfig,
+): Effect.Effect<
+  ProcessResult,
+  unknown,
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    const roots = resolveIssueWorkspaces(
+      config,
+      issue.key,
+      issue.description,
+      issue.summary,
+    );
+    const ws = stateWorkspaceFields(roots);
+    const rec = yield* store.get(issue.key);
+
+    const verify = yield* runVerifyPhase(issue, config, roots);
+    if (!verify.ok) {
+      yield* store.upsert({
+        issueKey: issue.key,
+        summary: issue.summary,
+        status: rec?.handoffStatus ? "agent_complete" : "error",
+        ...ws,
+        verifyError: verify.error,
+        error: rec?.handoffStatus ? undefined : verify.error,
+        verifyOutput: verify.output.slice(0, 2000),
+        finishedAt: new Date().toISOString(),
+        branches: rec?.branches,
+        commits: rec?.commits,
+        handoffStatus: rec?.handoffStatus,
+        handoffVerification: rec?.handoffVerification,
+      });
+      return {
+        issueKey: issue.key,
+        status: rec?.handoffStatus ? "agent_complete" : "error",
+        error: verify.error,
+      };
+    }
+
+    yield* store.upsert({
+      issueKey: issue.key,
+      summary: issue.summary,
+      status: "verified",
+      ...ws,
+      agentId: rec?.agentId,
+      runId: rec?.runId,
+      handoffStatus: rec?.handoffStatus,
+      handoffVerification: rec?.handoffVerification,
+      verifyOutput: verify.output.slice(0, 2000),
+      finishedAt: new Date().toISOString(),
+      resultPreview: rec?.resultPreview,
+      branches: rec?.branches,
+      commits: rec?.commits,
+    });
+
+    out.success(`${issue.key} verified`);
+    return { issueKey: issue.key, status: "verified" };
+  });
+
+export const processIssue = (
+  issue: JiraIssue,
+  config: MachineConfig,
+  apiKey: string,
+  options: ProcessOptions = {},
+): Effect.Effect<
+  ProcessResult,
+  unknown,
+  | StateStore
+  | import("@effect/platform/CommandExecutor").CommandExecutor
+  | FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    const roots = resolveIssueWorkspaces(
+      config,
+      issue.key,
+      issue.description,
+      issue.summary,
+    );
+    const ws = stateWorkspaceFields(roots);
+    const verifyCommands = yield* resolveVerifyCommandsForIssue(
+      config,
+      issue.key,
+      roots.keys,
+    );
+    const prompt = buildAgentPrompt({ issue, roots, config, verifyCommands });
+    const transcript = options.epic
+      ? yield* openTranscript(options.epic, issue.key)
+      : undefined;
+    if (transcript) {
+      yield* appendTranscriptLine(transcript, `Course start: ${issue.summary}`);
+    }
+
+    let branches: Record<string, string> = {};
+    if (options.stack && !options.dryRun) {
+      const clean = yield* ensureWorkspacesCleanForIssue(config, issue, {
+        label: "stack prep",
+      });
+      if (!clean.ok) {
+        const msg = clean.detail ?? "workspace not clean for stack prep";
+        yield* store.appendResolutionStep(issue.key, `Stack prep blocked: ${msg}`);
+        yield* store.upsert({
+          issueKey: issue.key,
+          summary: issue.summary,
+          status: "error",
+          ...ws,
+          finishedAt: new Date().toISOString(),
+          error: msg,
+          transcriptPath: transcript?.path,
+        });
+        out.error(`${issue.key}: ${msg}`);
+        return { issueKey: issue.key, status: "error", error: msg };
+      }
+
+      const stackOutcome = yield* checkoutWithRecovery({
         issue,
         config,
         stack: options.stack,
-        store,
         apiKey,
         transcript,
-      });
-      for (const row of stackActions) {
+      }).pipe(
+        Effect.match({
+          onFailure: (err) => ({
+            ok: false as const,
+            message: err instanceof Error ? err.message : String(err),
+          }),
+          onSuccess: (actions) => ({ ok: true as const, actions }),
+        }),
+      );
+
+      if (!stackOutcome.ok) {
+        const message = stackOutcome.message;
+        yield* store.appendResolutionStep(
+          issue.key,
+          `Stack prep failed: ${message.slice(0, 300)}`,
+        );
+        yield* store.upsert({
+          issueKey: issue.key,
+          summary: issue.summary,
+          status: "error",
+          ...ws,
+          finishedAt: new Date().toISOString(),
+          error: message,
+          transcriptPath: transcript?.path,
+        });
+        out.error(`${issue.key}: stack prep failed — ${message}`);
+        return { issueKey: issue.key, status: "error", error: message };
+      }
+
+      for (const row of stackOutcome.actions) {
         if (row.action === "noop") continue;
         out.info(`stack ${row.workspace}: ${row.action} → ${row.branch}`);
-        transcript?.appendLine(
-          `stack ${row.workspace}: ${row.action} → ${row.branch}`,
-        );
+        if (transcript) {
+          yield* appendTranscriptLine(
+            transcript,
+            `stack ${row.workspace}: ${row.action} → ${row.branch}`,
+          );
+        }
       }
-      branches = await recordBranches(roots);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : String(err);
-      store.appendResolutionStep(
-        issue.key,
-        `Stack prep failed: ${message.slice(0, 300)}`,
-      );
-      store.upsert({
-        issueKey: issue.key,
-        summary: issue.summary,
-        status: "error",
-        ...ws,
-        finishedAt: new Date().toISOString(),
-        error: message,
-        transcriptPath: transcript?.path,
-      });
-      out.error(`${issue.key}: stack prep failed — ${message}`);
-      return { issueKey: issue.key, status: "error", error: message };
+      branches = yield* recordBranches(roots);
+    } else if (!options.dryRun) {
+      branches = yield* recordBranches(roots);
     }
-  } else if (!options.dryRun) {
-    branches = await recordBranches(roots);
-  }
 
-  if (options.dryRun) {
-    console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
-    console.log(prompt.slice(0, 1200));
-    console.log("\n… (truncated)\n");
-    return { issueKey: issue.key, status: "dry-run" };
-  }
+    if (options.dryRun) {
+      console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
+      console.log(prompt.slice(0, 1200));
+      console.log("\n… (truncated)\n");
+      return { issueKey: issue.key, status: "dry-run" };
+    }
 
-  store.upsert({
-    issueKey: issue.key,
-    summary: issue.summary,
-    status: "running",
-    ...ws,
-    branches,
-    transcriptPath: transcript?.path,
-    startedAt: new Date().toISOString(),
-  });
+    yield* store.upsert({
+      issueKey: issue.key,
+      summary: issue.summary,
+      status: "running",
+      ...ws,
+      branches,
+      transcriptPath: transcript?.path,
+      startedAt: new Date().toISOString(),
+    });
 
-  out.courseHeader(issue.key, issue.summary, "running");
-  out.info(formatWorkspacesLabel(roots));
-  const local = localAgentOptions(config, roots.cwds);
-  out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
-  transcript?.appendLine(`agent local cwd=${JSON.stringify(local.cwd)}`);
+    out.courseHeader(issue.key, issue.summary, "running");
+    out.info(formatWorkspacesLabel(roots));
+    const local = localAgentOptions(config, roots.cwds);
+    out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
+    if (transcript) {
+      yield* appendTranscriptLine(
+        transcript,
+        `agent local cwd=${JSON.stringify(local.cwd)}`,
+      );
+    }
 
-  try {
-    const agent = options.resumeAgentId
-      ? await Agent.resume(options.resumeAgentId, {
+    const agentResult = yield* withAgent(
+      createOrResumeAgent({
+        resumeAgentId: options.resumeAgentId,
+        create: {
           apiKey,
           model: { id: config.model },
           local,
-        })
-      : await Agent.create({
-          apiKey,
-          model: { id: config.model },
-          local,
-        });
-
-    try {
-      const run = await agent.send(prompt);
-      out.phase("stream", `agentId=${agent.agentId} runId=${run.id}`);
-      transcript?.appendLine(`agentId=${agent.agentId} runId=${run.id}`);
-
-      let streamCanceled = false;
-      if (options.stream !== false) {
-        const sink = {
-          writeStdout: (t: string) => process.stdout.write(t),
-          writeStderr: (t: string) => process.stderr.write(t),
-          transcript: (t: string) => transcript?.append(t),
-        };
-        const drain = await drainRunStream(run.stream(), sink);
-        streamCanceled = drain.canceled;
-      }
-
-      let result;
-      try {
-        result = await run.wait();
-      } catch (waitErr) {
-        streamCanceled = true;
-        const msg = formatAgentError(waitErr);
-        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
-        const recovery = await runRecoveryAgent({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          kind: "agent_error",
-          detail: msg,
-          transcript,
-          resumeAgentId: agent.agentId,
-        });
-        if (recovery.recovered && recovery.runId) {
-          result = {
-            id: recovery.runId,
-            status: "finished" as const,
-            result: recovery.resultText,
+        },
+      }),
+      (agent) =>
+        Effect.gen(function* () {
+        const run = yield* sendPrompt(agent, prompt);
+        out.phase("stream", `agentId=${agent.agentId} runId=${run.id}`);
+        if (transcript) {
+          yield* appendTranscriptLine(
+            transcript,
+            `agentId=${agent.agentId} runId=${run.id}`,
+          );
+        }
+        let streamCanceled = false;
+        if (options.stream !== false) {
+          const sink = {
+            writeStdout: (t: string) => process.stdout.write(t),
+            writeStderr: (t: string) => process.stderr.write(t),
+            appendTranscript: transcript
+              ? (t: string) => appendTranscript(transcript, t)
+              : undefined,
           };
-        } else {
-          store.upsert({
-            issueKey: issue.key,
-            summary: issue.summary,
-            status: "error",
-            ...ws,
-            branches,
-            agentId: agent.agentId,
-            finishedAt: new Date().toISOString(),
-            error: msg,
-            resultPreview: msg.slice(0, 500),
-            transcriptPath: transcript?.path,
+          const drain = yield* drainRunStream(run.stream(), sink);
+          streamCanceled = drain.canceled;
+        }
+
+        let result;
+        const waitOutcome = yield* waitForRun(run);
+
+        if (!waitOutcome.ok) {
+          streamCanceled = true;
+          const msg = formatAgentError(waitOutcome.err);
+          yield* store.appendResolutionStep(
+            issue.key,
+            `Agent run error: ${msg.slice(0, 200)}`,
+          );
+          const recovery = yield* runRecoveryAgent({
+            issue,
+            config,
+            roots,
+            apiKey,
+            kind: "agent_error",
+            detail: msg,
+            transcript,
+            resumeAgentId: agent.agentId,
           });
-          return {
-            issueKey: issue.key,
-            status: "error",
-            agentId: agent.agentId,
-            error: msg,
-          };
-        }
-      }
-
-      if (streamCanceled && result.status !== "error") {
-        const msg = formatAgentError(new Error("canceled"));
-        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
-        const recovery = await runRecoveryAgent({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          kind: "agent_error",
-          detail: msg,
-          transcript,
-          resumeAgentId: agent.agentId,
-        });
-        if (recovery.recovered && recovery.runId) {
-          result = {
-            id: recovery.runId,
-            status: "finished" as const,
-            result: recovery.resultText,
-          };
-        } else {
-          store.upsert({
-            issueKey: issue.key,
-            summary: issue.summary,
-            status: "error",
-            ...ws,
-            branches,
-            agentId: agent.agentId,
-            runId: result.id,
-            finishedAt: new Date().toISOString(),
-            error: msg,
-            resultPreview: msg.slice(0, 500),
-            transcriptPath: transcript?.path,
-          });
-          return {
-            issueKey: issue.key,
-            status: "error",
-            agentId: agent.agentId,
-            runId: result.id,
-            error: msg,
-          };
-        }
-      }
-
-      if (result.status === "error") {
-        const msg = result.result ?? "Run failed without message";
-        store.appendResolutionStep(issue.key, `Agent run error: ${msg.slice(0, 200)}`);
-        const recovery = await runRecoveryAgent({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          kind: "agent_error",
-          detail: msg,
-          transcript,
-          resumeAgentId: agent.agentId,
-        });
-        if (recovery.recovered && recovery.runId) {
-          result = {
-            id: recovery.runId,
-            status: "finished",
-            result: recovery.resultText,
-          };
-        } else {
-        store.upsert({
-          issueKey: issue.key,
-          summary: issue.summary,
-          status: "error",
-          ...ws,
-          branches,
-          agentId: agent.agentId,
-          runId: result.id,
-          finishedAt: new Date().toISOString(),
-          error: msg,
-          resultPreview: msg.slice(0, 500),
-        });
-        return {
-          issueKey: issue.key,
-          status: "error",
-          agentId: agent.agentId,
-          runId: result.id,
-          error: msg,
-        };
-        }
-      }
-
-      if (result.status === "cancelled") {
-        store.upsert({
-          issueKey: issue.key,
-          summary: issue.summary,
-          status: "cancelled",
-          ...ws,
-          branches,
-          agentId: agent.agentId,
-          runId: result.id,
-          finishedAt: new Date().toISOString(),
-        });
-        return {
-          issueKey: issue.key,
-          status: "cancelled",
-          agentId: agent.agentId,
-          runId: result.id,
-        };
-      }
-
-      let text = result.result ?? "";
-      let handoff = parseHandoff(text);
-
-      if (!agentPhaseSucceeded(handoff)) {
-        const msg = `Agent finished without acceptable handoff (status=${handoff.status})`;
-        store.appendResolutionStep(issue.key, msg);
-        const recovery = await runRecoveryAgent({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          kind: "handoff",
-          detail: msg,
-          transcript,
-          resumeAgentId: agent.agentId,
-        });
-        if (recovery.recovered && recovery.resultText) {
-          const retryHandoff = parseHandoff(recovery.resultText);
-          if (agentPhaseSucceeded(retryHandoff)) {
-            handoff = retryHandoff;
-            text = recovery.resultText ?? text;
+          if (recovery.recovered && recovery.runId) {
+            result = {
+              id: recovery.runId,
+              status: "finished" as const,
+              result: recovery.resultText,
+            };
           } else {
-            store.upsert({
+            yield* store.upsert({
               issueKey: issue.key,
               summary: issue.summary,
               status: "error",
               ...ws,
               branches,
-              agentId: recovery.agentId ?? agent.agentId,
-              runId: recovery.runId,
-              handoffStatus: retryHandoff.status,
-              handoffVerification: retryHandoff.verification,
+              agentId: agent.agentId,
               finishedAt: new Date().toISOString(),
               error: msg,
-              resultPreview: recovery.resultText.slice(0, 500),
+              resultPreview: msg.slice(0, 500),
               transcriptPath: transcript?.path,
             });
             return {
               issueKey: issue.key,
-              status: "error",
-              agentId: recovery.agentId,
-              runId: recovery.runId,
+              status: "error" as const,
+              agentId: agent.agentId,
               error: msg,
             };
           }
         } else {
-        store.upsert({
-          issueKey: issue.key,
-          summary: issue.summary,
-          status: "error",
-          ...ws,
-          branches,
-          agentId: agent.agentId,
-          runId: result.id,
-          handoffStatus: handoff.status,
-          handoffVerification: handoff.verification,
-          finishedAt: new Date().toISOString(),
-          error: msg,
-          resultPreview: text.slice(0, 500),
-        });
-        return {
-          issueKey: issue.key,
-          status: "error",
-          agentId: agent.agentId,
-          runId: result.id,
-          error: msg,
-        };
+          result = waitOutcome.value;
         }
-      }
 
-      if (
-        config.requireHandoffTests &&
-        !verificationIsStrongEnough(handoff.verification, {
-          requireTests: true,
-        })
-      ) {
-        out.warn(
-          `Handoff claims "${handoff.verification}" — verify commands are the hard gate`,
-        );
-      }
+        if (streamCanceled && result.status !== "error") {
+          const msg = formatAgentError(new Error("canceled"));
+          yield* store.appendResolutionStep(
+            issue.key,
+            `Agent run error: ${msg.slice(0, 200)}`,
+          );
+          const recovery = yield* runRecoveryAgent({
+            issue,
+            config,
+            roots,
+            apiKey,
+            kind: "agent_error",
+            detail: msg,
+            transcript,
+            resumeAgentId: agent.agentId,
+          });
+          if (recovery.recovered && recovery.runId) {
+            result = {
+              id: recovery.runId,
+              status: "finished" as const,
+              result: recovery.resultText,
+            };
+          } else {
+            yield* store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              ...ws,
+              branches,
+              agentId: agent.agentId,
+              runId: result.id,
+              finishedAt: new Date().toISOString(),
+              error: msg,
+              resultPreview: msg.slice(0, 500),
+              transcriptPath: transcript?.path,
+            });
+            return {
+              issueKey: issue.key,
+              status: "error" as const,
+              agentId: agent.agentId,
+              runId: result.id,
+              error: msg,
+            };
+          }
+        }
 
-      let commits: Record<string, string> = {};
-      const shouldCommit = config.commitWip && !options.skipCommit;
-      if (shouldCommit) {
-        commits = await commitCourseWithRecovery({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          transcript,
-          workspaces: roots.keys.map((key, i) => ({
-            key,
-            cwd: roots.cwds[i]!,
-          })),
-        });
-        const workspaces = roots.keys.map((key, i) => ({
-          key,
-          cwd: roots.cwds[i]!,
-        }));
-        const dirtyAfter = await workspacesStillDirty(workspaces);
-        const anyCommitFailed = workspaces.some(
-          (ws) => dirtyAfter && !(commits[ws.key] ?? ""),
-        );
-        if (anyCommitFailed) {
-          const msg =
-            "WIP commit failed and working tree is still dirty — cannot advance stack";
-          store.appendResolutionStep(issue.key, msg);
-          store.upsert({
+        if (result.status === "error") {
+          const msg = result.result ?? "Run failed without message";
+          yield* store.appendResolutionStep(
+            issue.key,
+            `Agent run error: ${msg.slice(0, 200)}`,
+          );
+          const recovery = yield* runRecoveryAgent({
+            issue,
+            config,
+            roots,
+            apiKey,
+            kind: "agent_error",
+            detail: msg,
+            transcript,
+            resumeAgentId: agent.agentId,
+          });
+          if (recovery.recovered && recovery.runId) {
+            result = {
+              id: recovery.runId,
+              status: "finished",
+              result: recovery.resultText,
+            };
+          } else {
+            yield* store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              ...ws,
+              branches,
+              agentId: agent.agentId,
+              runId: result.id,
+              finishedAt: new Date().toISOString(),
+              error: msg,
+              resultPreview: msg.slice(0, 500),
+            });
+            return {
+              issueKey: issue.key,
+              status: "error" as const,
+              agentId: agent.agentId,
+              runId: result.id,
+              error: msg,
+            };
+          }
+        }
+
+        if (result.status === "cancelled") {
+          yield* store.upsert({
             issueKey: issue.key,
             summary: issue.summary,
-            status: "error",
+            status: "cancelled",
             ...ws,
             branches,
             agentId: agent.agentId,
             runId: result.id,
-            handoffStatus: handoff.status,
-            handoffVerification: handoff.verification,
             finishedAt: new Date().toISOString(),
-            error: msg,
-            resultPreview: text.slice(0, 500),
-            transcriptPath: transcript?.path,
           });
           return {
             issueKey: issue.key,
-            status: "error",
+            status: "cancelled" as const,
             agentId: agent.agentId,
             runId: result.id,
-            error: msg,
           };
         }
-      }
 
-      store.upsert({
-        issueKey: issue.key,
-        summary: issue.summary,
-        status: "agent_complete",
-        ...ws,
-        branches,
-        commits,
-        agentId: agent.agentId,
-        runId: result.id,
-        handoffStatus: handoff.status,
-        handoffVerification: handoff.verification,
-        resultPreview: text.slice(0, 500),
-        transcriptPath: transcript?.path,
-      });
+        let text = result.result ?? "";
+        let handoff = parseHandoff(text);
 
-      out.success(
-        `${issue.key} agent phase (${handoff.status}, ${handoff.verification})`,
-      );
+        if (!agentPhaseSucceeded(handoff)) {
+          const msg = `Agent finished without acceptable handoff (status=${handoff.status})`;
+          yield* store.appendResolutionStep(issue.key, msg);
+          const recovery = yield* runRecoveryAgent({
+            issue,
+            config,
+            roots,
+            apiKey,
+            kind: "handoff",
+            detail: msg,
+            transcript,
+            resumeAgentId: agent.agentId,
+          });
+          if (recovery.recovered && recovery.resultText) {
+            const retryHandoff = parseHandoff(recovery.resultText);
+            if (agentPhaseSucceeded(retryHandoff)) {
+              handoff = retryHandoff;
+              text = recovery.resultText ?? text;
+            } else {
+              yield* store.upsert({
+                issueKey: issue.key,
+                summary: issue.summary,
+                status: "error",
+                ...ws,
+                branches,
+                agentId: recovery.agentId ?? agent.agentId,
+                runId: recovery.runId,
+                handoffStatus: retryHandoff.status,
+                handoffVerification: retryHandoff.verification,
+                finishedAt: new Date().toISOString(),
+                error: msg,
+                resultPreview: recovery.resultText.slice(0, 500),
+                transcriptPath: transcript?.path,
+              });
+              return {
+                issueKey: issue.key,
+                status: "error" as const,
+                agentId: recovery.agentId,
+                runId: recovery.runId,
+                error: msg,
+              };
+            }
+          } else {
+            yield* store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              ...ws,
+              branches,
+              agentId: agent.agentId,
+              runId: result.id,
+              handoffStatus: handoff.status,
+              handoffVerification: handoff.verification,
+              finishedAt: new Date().toISOString(),
+              error: msg,
+              resultPreview: text.slice(0, 500),
+            });
+            return {
+              issueKey: issue.key,
+              status: "error" as const,
+              agentId: agent.agentId,
+              runId: result.id,
+              error: msg,
+            };
+          }
+        }
 
-      if (options.skipVerify) {
-        out.warn("--skip-verify: not running verify commands");
-        store.upsert({
+        if (
+          config.requireHandoffTests &&
+          !verificationIsStrongEnough(handoff.verification, {
+            requireTests: true,
+          })
+        ) {
+          out.warn(
+            `Handoff claims "${handoff.verification}" — verify commands are the hard gate`,
+          );
+        }
+
+        let commits: Record<string, string> = {};
+        const shouldCommit = config.commitWip && !options.skipCommit;
+        if (shouldCommit) {
+          commits = yield* commitCourseWithRecovery({
+            issue,
+            config,
+            roots,
+            apiKey,
+            transcript,
+            workspaces: roots.keys.map((key, i) => ({
+              key,
+              cwd: roots.cwds[i]!,
+            })),
+          });
+          const workspaces = roots.keys.map((key, i) => ({
+            key,
+            cwd: roots.cwds[i]!,
+          }));
+          const dirtyAfter = yield* workspacesStillDirty(workspaces);
+          const anyCommitFailed = workspaces.some(
+            (w) => dirtyAfter && !(commits[w.key] ?? ""),
+          );
+          if (anyCommitFailed) {
+            const msg =
+              "WIP commit failed and working tree is still dirty — cannot advance stack";
+            yield* store.appendResolutionStep(issue.key, msg);
+            yield* store.upsert({
+              issueKey: issue.key,
+              summary: issue.summary,
+              status: "error",
+              ...ws,
+              branches,
+              agentId: agent.agentId,
+              runId: result.id,
+              handoffStatus: handoff.status,
+              handoffVerification: handoff.verification,
+              finishedAt: new Date().toISOString(),
+              error: msg,
+              resultPreview: text.slice(0, 500),
+              transcriptPath: transcript?.path,
+            });
+            return {
+              issueKey: issue.key,
+              status: "error" as const,
+              agentId: agent.agentId,
+              runId: result.id,
+              error: msg,
+            };
+          }
+        }
+
+        yield* store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
-          status: "verified",
+          status: "agent_complete",
           ...ws,
           branches,
           commits,
@@ -643,59 +691,106 @@ export async function processIssue(
           runId: result.id,
           handoffStatus: handoff.status,
           handoffVerification: handoff.verification,
-          finishedAt: new Date().toISOString(),
           resultPreview: text.slice(0, 500),
+          transcriptPath: transcript?.path,
         });
-        return {
-          issueKey: issue.key,
-          status: "verified",
-          agentId: agent.agentId,
-          runId: result.id,
-          result: text,
-        };
-      }
 
-      let verify = await runVerifyPhase(issue, config, roots);
-      if (!verify.ok) {
-        store.appendResolutionStep(
-          issue.key,
-          verify.error ?? "Tests failed during verify",
+        out.success(
+          `${issue.key} agent phase (${handoff.status}, ${handoff.verification})`,
         );
-        const recovery = await runRecoveryAgent({
-          issue,
-          config,
-          roots,
-          store,
-          apiKey,
-          kind: "verify",
-          detail: verify.error ?? "verify failed",
-          verifyOutput: verify.output,
-          transcript,
-          resumeAgentId: agent.agentId,
-        });
-        if (recovery.recovered) {
-          if (config.commitWip && !options.skipCommit) {
-            commits = await commitCourseWithRecovery({
-              issue,
-              config,
-              roots,
-              store,
-              apiKey,
-              transcript,
-              workspaces: roots.keys.map((key, i) => ({
-                key,
-                cwd: roots.cwds[i]!,
-              })),
-            });
-          }
-          verify = await runVerifyPhase(issue, config, roots);
+
+        if (options.skipVerify) {
+          out.warn("--skip-verify: not running verify commands");
+          yield* store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "verified",
+            ...ws,
+            branches,
+            commits,
+            agentId: agent.agentId,
+            runId: result.id,
+            handoffStatus: handoff.status,
+            handoffVerification: handoff.verification,
+            finishedAt: new Date().toISOString(),
+            resultPreview: text.slice(0, 500),
+          });
+          return {
+            issueKey: issue.key,
+            status: "verified" as const,
+            agentId: agent.agentId,
+            runId: result.id,
+            result: text,
+          };
         }
-      }
-      if (!verify.ok) {
-        store.upsert({
+
+        let verify = yield* runVerifyPhase(issue, config, roots);
+        if (!verify.ok) {
+          yield* store.appendResolutionStep(
+            issue.key,
+            verify.error ?? "Tests failed during verify",
+          );
+          const recovery = yield* runRecoveryAgent({
+            issue,
+            config,
+            roots,
+            apiKey,
+            kind: "verify",
+            detail: verify.error ?? "verify failed",
+            verifyOutput: verify.output,
+            transcript,
+            resumeAgentId: agent.agentId,
+          });
+          if (recovery.recovered) {
+            if (config.commitWip && !options.skipCommit) {
+              commits = yield* commitCourseWithRecovery({
+                issue,
+                config,
+                roots,
+                apiKey,
+                transcript,
+                workspaces: roots.keys.map((key, i) => ({
+                  key,
+                  cwd: roots.cwds[i]!,
+                })),
+              });
+            }
+            verify = yield* runVerifyPhase(issue, config, roots);
+          }
+        }
+        if (!verify.ok) {
+          yield* store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "agent_complete",
+            ...ws,
+            branches,
+            commits,
+            agentId: agent.agentId,
+            runId: result.id,
+            handoffStatus: handoff.status,
+            handoffVerification: handoff.verification,
+            verifyOutput: verify.output.slice(0, 2000),
+            verifyError: verify.error,
+            finishedAt: new Date().toISOString(),
+            resultPreview: text.slice(0, 500),
+            transcriptPath: transcript?.path,
+          });
+          out.error(`${issue.key} verify failed: ${verify.error}`);
+          return {
+            issueKey: issue.key,
+            status: "agent_complete" as const,
+            agentId: agent.agentId,
+            runId: result.id,
+            error: verify.error,
+            result: text,
+          };
+        }
+
+        yield* store.upsert({
           issueKey: issue.key,
           summary: issue.summary,
-          status: "agent_complete",
+          status: "verified",
           ...ws,
           branches,
           commits,
@@ -704,84 +799,68 @@ export async function processIssue(
           handoffStatus: handoff.status,
           handoffVerification: handoff.verification,
           verifyOutput: verify.output.slice(0, 2000),
-          verifyError: verify.error,
           finishedAt: new Date().toISOString(),
           resultPreview: text.slice(0, 500),
-          transcriptPath: transcript?.path,
         });
-        out.error(`${issue.key} verify failed: ${verify.error}`);
+
+        out.success(`${issue.key} verified`);
         return {
           issueKey: issue.key,
-          status: "agent_complete",
+          status: "verified" as const,
           agentId: agent.agentId,
           runId: result.id,
-          error: verify.error,
           result: text,
         };
-      }
+      }),
+    ).pipe(
+      Effect.catchAll((err) =>
+        Effect.gen(function* () {
+          const message = isSdkCanceledError(err)
+            ? formatAgentError(err)
+            : err instanceof CursorAgentError
+              ? `${err.message} (retryable=${err.isRetryable})`
+              : err instanceof Error
+                ? err.message
+                : String(err);
 
-      store.upsert({
-        issueKey: issue.key,
-        summary: issue.summary,
-        status: "verified",
-        ...ws,
-        branches,
-        commits,
-        agentId: agent.agentId,
-        runId: result.id,
-        handoffStatus: handoff.status,
-        handoffVerification: handoff.verification,
-        verifyOutput: verify.output.slice(0, 2000),
-        finishedAt: new Date().toISOString(),
-        resultPreview: text.slice(0, 500),
-      });
+          if (transcript) {
+            yield* appendTranscriptBlock(transcript, "fatal error", message);
+          }
+          yield* store.appendResolutionStep(issue.key, message.slice(0, 300));
+          yield* store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "error",
+            ...ws,
+            branches,
+            finishedAt: new Date().toISOString(),
+            error: message,
+            transcriptPath: transcript?.path,
+          });
 
-      out.success(`${issue.key} verified`);
-      return {
-        issueKey: issue.key,
-        status: "verified",
-        agentId: agent.agentId,
-        runId: result.id,
-        result: text,
-      };
-    } finally {
-      await safeDisposeAgent(agent);
-    }
-  } catch (err) {
-    const message = isSdkCanceledError(err)
-      ? formatAgentError(err)
-      : err instanceof CursorAgentError
-        ? `${err.message} (retryable=${err.isRetryable})`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+          out.error(`${issue.key}: ${message}`);
+          return { issueKey: issue.key, status: "error" as const, error: message };
+        }),
+      ),
+    );
 
-    transcript?.appendBlock("fatal error", message);
-    store.appendResolutionStep(issue.key, message.slice(0, 300));
-    store.upsert({
-      issueKey: issue.key,
-      summary: issue.summary,
-      status: "error",
-      ...ws,
-      branches,
-      finishedAt: new Date().toISOString(),
-      error: message,
-      transcriptPath: transcript?.path,
-    });
+    return agentResult;
+  });
 
-    out.error(`${issue.key}: ${message}`);
-    return { issueKey: issue.key, status: "error", error: message };
-  }
-}
-
-async function workspacesStillDirty(
+const workspacesStillDirty = (
   workspaces: Array<{ key: string; cwd: string }>,
-): Promise<boolean> {
-  for (const ws of workspaces) {
-    if (await gitIsDirty(ws.cwd)) return true;
-  }
-  return false;
-}
+): Effect.Effect<
+  boolean,
+  import("@effect/platform/Error").PlatformError | CommandFailed,
+  import("@effect/platform/CommandExecutor").CommandExecutor
+> =>
+  Effect.gen(function* () {
+    for (const ws of workspaces) {
+      const dirty = yield* gitIsDirty(ws.cwd);
+      if (dirty) return true;
+    }
+    return false;
+  });
 
 function commitsFromResults(results: CommitResult[]): Record<string, string> {
   const commits: Record<string, string> = {};
@@ -791,93 +870,98 @@ function commitsFromResults(results: CommitResult[]): Record<string, string> {
   return commits;
 }
 
-async function logCommitResults(results: CommitResult[]): Promise<void> {
-  for (const cr of results) {
-    if (cr.committed) {
-      out.success(`${cr.workspaceKey}: ${cr.branch} @ ${cr.sha}`);
-    } else if (cr.error) {
-      out.warn(`${cr.workspaceKey}: commit failed — ${cr.error}`);
-    } else {
-      out.info(`${cr.workspaceKey}: ${cr.branch} (clean)`);
+const logCommitResults = (results: CommitResult[]): Effect.Effect<void> =>
+  Effect.sync(() => {
+    for (const cr of results) {
+      if (cr.committed) {
+        out.success(`${cr.workspaceKey}: ${cr.branch} @ ${cr.sha}`);
+      } else if (cr.error) {
+        out.warn(`${cr.workspaceKey}: commit failed — ${cr.error}`);
+      } else {
+        out.info(`${cr.workspaceKey}: ${cr.branch} (clean)`);
+      }
     }
-  }
-}
+  });
 
-async function commitCourseWithRecovery(options: {
+const commitCourseWithRecovery = (options: {
   issue: JiraIssue;
-  config: DinnerConfig;
+  config: MachineConfig;
   roots: IssueWorkspaces;
-  store: StateStore;
   apiKey: string;
   transcript?: Transcript;
   workspaces: Array<{ key: string; cwd: string }>;
-}): Promise<Record<string, string>> {
-  out.phase("commit", "WIP on story branches");
+}): Effect.Effect<
+  Record<string, string>,
+  unknown,
+  StateStore | import("@effect/platform/CommandExecutor").CommandExecutor | FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    out.phase("commit", "WIP on story branches");
 
-  let results = await commitCourseWip(
-    options.issue.key,
-    options.issue.summary,
-    options.workspaces,
-  );
-  await logCommitResults(results);
-
-  if (!(await workspacesStillDirty(options.workspaces))) {
-    return commitsFromResults(results);
-  }
-
-  const failed = results.filter((r) => r.error || !(r.committed && r.sha));
-  if (failed.length === 0) {
-    return commitsFromResults(results);
-  }
-
-  const detail = failed
-    .map((r) => `${r.workspaceKey}: ${r.error ?? "dirty after commit attempt"}`)
-    .join("; ");
-  options.store.appendResolutionStep(
-    options.issue.key,
-    `Commit failed: ${detail}`,
-  );
-  const recovery = await runRecoveryAgent({
-    issue: options.issue,
-    config: options.config,
-    roots: options.roots,
-    store: options.store,
-    apiKey: options.apiKey,
-    kind: "commit",
-    detail,
-    transcript: options.transcript,
-  });
-
-  if (recovery.recovered) {
-    results = await commitCourseWip(
+    let results = yield* commitCourseWip(
       options.issue.key,
       options.issue.summary,
       options.workspaces,
     );
-    await logCommitResults(results);
-  }
+    yield* logCommitResults(results);
 
-  if (await workspacesStillDirty(options.workspaces)) {
-    const stashResults = await recoverDirtyWorkspaces(
+    if (!(yield* workspacesStillDirty(options.workspaces))) {
+      return commitsFromResults(results);
+    }
+
+    const failed = results.filter((r) => r.error || !(r.committed && r.sha));
+    if (failed.length === 0) {
+      return commitsFromResults(results);
+    }
+
+    const detail = failed
+      .map((r) => `${r.workspaceKey}: ${r.error ?? "dirty after commit attempt"}`)
+      .join("; ");
+    yield* store.appendResolutionStep(
       options.issue.key,
-      options.issue.summary,
-      options.workspaces,
+      `Commit failed: ${detail}`,
     );
-    for (const sr of stashResults) {
-      if (sr.ok) {
-        out.warn(
-          `${sr.cwd}: auto-stashed (${sr.action}) so stack prep can continue`,
-        );
-        options.store.appendResolutionStep(
-          options.issue.key,
-          `Auto-stash ${sr.action} on ${sr.cwd}`,
-        );
+    const recovery = yield* runRecoveryAgent({
+      issue: options.issue,
+      config: options.config,
+      roots: options.roots,
+      apiKey: options.apiKey,
+      kind: "commit",
+      detail,
+      transcript: options.transcript,
+    });
+
+    if (recovery.recovered) {
+      results = yield* commitCourseWip(
+        options.issue.key,
+        options.issue.summary,
+        options.workspaces,
+      );
+      yield* logCommitResults(results);
+    }
+
+    if (yield* workspacesStillDirty(options.workspaces)) {
+      const stashResults = yield* recoverDirtyWorkspaces(
+        options.issue.key,
+        options.issue.summary,
+        options.workspaces,
+      );
+      for (const sr of stashResults) {
+        if (sr.ok) {
+          out.warn(
+            `${sr.cwd}: auto-stashed (${sr.action}) so stack prep can continue`,
+          );
+          yield* store.appendResolutionStep(
+            options.issue.key,
+            `Auto-stash ${sr.action} on ${sr.cwd}`,
+          );
+        }
       }
     }
-  }
 
-  return commitsFromResults(results);
-}
+    return commitsFromResults(results);
+  });
 
 /** Topological order: blockers before dependents. */
 export function sortByDependencies(issues: JiraIssue[]): JiraIssue[] {

@@ -1,5 +1,7 @@
 import type { JiraIssue } from "../jira/acli.js";
-import type { IssueRunRecord, StateStore } from "../state/store.js";
+import type { IssueRunRecord } from "../state/store.js";
+import { StateStore } from "../state/store.js";
+import * as Effect from "effect/Effect";
 
 const FAILURE_STEP_MARKERS = [
   "Stack prep failed",
@@ -56,26 +58,33 @@ export interface ServeHaltInfo {
   transcriptPath?: string;
 }
 
-export function findFirstMenuFailure(
+export const findFirstMenuFailure = (
   issues: JiraIssue[],
-  store: StateStore,
-): ServeHaltInfo | undefined {
-  for (const issue of issues) {
-    const rec = store.get(issue.key);
-    if (!issueFailed(rec)) continue;
-    return {
-      issueKey: issue.key,
-      summary: issue.summary,
-      reason: primaryFailureMessage(rec!),
-      transcriptPath: rec?.transcriptPath,
-    };
-  }
-  return undefined;
-}
+): Effect.Effect<ServeHaltInfo | undefined, never, StateStore> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    for (const issue of issues) {
+      const rec = yield* store.get(issue.key);
+      if (!issueFailed(rec)) continue;
+      return {
+        issueKey: issue.key,
+        summary: issue.summary,
+        reason: primaryFailureMessage(rec!),
+        transcriptPath: rec?.transcriptPath,
+      };
+    }
+    return undefined;
+  });
 
-export function countMenuFailures(
+export const countMenuFailures = (
   issues: JiraIssue[],
-  store: StateStore,
-): number {
-  return issues.filter((i) => issueFailed(store.get(i.key))).length;
-}
+): Effect.Effect<number, never, StateStore> =>
+  Effect.gen(function* () {
+    const store = yield* StateStore;
+    let count = 0;
+    for (const issue of issues) {
+      const rec = yield* store.get(issue.key);
+      if (issueFailed(rec)) count += 1;
+    }
+    return count;
+  });

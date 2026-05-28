@@ -1,78 +1,75 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
-import { StateStore } from "./store.js";
+import { runEffect } from "../effect/test-runtime.js";
+import { StateStore, layer as stateStoreLayer } from "./store.js";
+
+function withTempStore<A>(
+  blockerPolicy: "strict" | "agent_complete" = "strict",
+  run: Effect.Effect<A, unknown, StateStore>,
+): Promise<A> {
+  return runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectory({ prefix: "issue-dinner-" });
+      return yield* run.pipe(Effect.provide(stateStoreLayer(dir, blockerPolicy)));
+    }),
+  );
+}
 
 describe("StateStore.isDone", () => {
-  it("treats only verified and skipped as done for blocker gating", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir);
-      store.upsert({
+  it("treats only verified and skipped as done for blocker gating", () =>
+    withTempStore("strict", Effect.gen(function* () {
+      const store = yield* StateStore;
+      yield* store.upsert({
         issueKey: "CPD-636",
         summary: "x",
         status: "agent_complete",
       });
-      assert.equal(store.isDone("CPD-636"), false);
+      assert.equal(yield* store.isDone("CPD-636"), false);
 
-      store.upsert({
+      yield* store.upsert({
         issueKey: "CPD-636",
         summary: "x",
         status: "verified",
       });
-      assert.equal(store.isDone("CPD-636"), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+      assert.equal(yield* store.isDone("CPD-636"), true);
+    })));
 
-  it("treats agent_complete as done when blockerPolicy is agent_complete", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir, "agent_complete");
-      store.upsert({
+  it("treats agent_complete as done when blockerPolicy is agent_complete", () =>
+    withTempStore("agent_complete", Effect.gen(function* () {
+      const store = yield* StateStore;
+      yield* store.upsert({
         issueKey: "CPD-636",
         summary: "x",
         status: "agent_complete",
       });
-      assert.equal(store.isDone("CPD-636"), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+      assert.equal(yield* store.isDone("CPD-636"), true);
+    })));
 
-  it("appendResolutionStep accumulates steps", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir);
-      store.setEpic("CPD-635");
-      store.appendResolutionStep("CPD-637", "first");
-      store.appendResolutionStep("CPD-637", "second");
-      assert.deepEqual(store.get("CPD-637")?.resolutionSteps, [
+  it("appendResolutionStep accumulates steps", () =>
+    withTempStore("strict", Effect.gen(function* () {
+      const store = yield* StateStore;
+      yield* store.setEpic("CPD-635");
+      yield* store.appendResolutionStep("CPD-637", "first");
+      yield* store.appendResolutionStep("CPD-637", "second");
+      assert.deepEqual((yield* store.get("CPD-637"))?.resolutionSteps, [
         "first",
         "second",
       ]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    })));
 
-  it("recovers stale running records", () => {
-    const dir = mkdtempSync(join(tmpdir(), "issue-dinner-"));
-    try {
-      const store = new StateStore(dir);
-      store.upsert({
+  it("recovers stale running records", () =>
+    withTempStore("strict", Effect.gen(function* () {
+      const store = yield* StateStore;
+      yield* store.upsert({
         issueKey: "CPD-636",
         summary: "x",
         status: "running",
       });
-      const recovered = store.recoverStaleRunning();
+      const recovered = yield* store.recoverStaleRunning();
       assert.deepEqual(recovered, ["CPD-636"]);
-      assert.equal(store.get("CPD-636")?.status, "error");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+      assert.equal((yield* store.get("CPD-636"))?.status, "error");
+    })));
 });

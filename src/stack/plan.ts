@@ -1,5 +1,5 @@
 import { sortByDependencies } from "../agent/runner.js";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { resolveIssueWorkspaces } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
 import { storyBranchName } from "./names.js";
@@ -12,7 +12,7 @@ export interface RepoStackStep {
 
 export function buildRepoStackPlan(
   issues: JiraIssue[],
-  config: DinnerConfig,
+  config: MachineConfig,
   workspaceKey: string,
   stackBase: string,
   stackPrefix: string,
@@ -39,7 +39,7 @@ export function buildRepoStackPlan(
 
 export function buildEpicStackPlans(
   issues: JiraIssue[],
-  config: DinnerConfig,
+  config: MachineConfig,
   stackBase: string,
   stackPrefix: string,
 ): Map<string, RepoStackStep[]> {

@@ -1,9 +1,12 @@
-import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import type { ResolvedVerifyCommand } from "./resolve.js";
 import { effectiveVerifyTier } from "./tier.js";
 
-export function pathArgsFromVerifyArgs(args: string[]): string[] {
+type PlatformError = import("@effect/platform/Error").PlatformError;
+
+export function pathArgsFromVerifyArgs(args: ReadonlyArray<string>): string[] {
   const paths: string[] = [];
   for (const arg of args) {
     if (arg.startsWith("-")) continue;
@@ -16,26 +19,29 @@ export function pathArgsFromVerifyArgs(args: string[]): string[] {
 }
 
 /** Pair integration route tests with sibling unit_test modules (fileservice2 layout). */
-export function unitTestPathsBesideIntegration(
+export const unitTestPathsBesideIntegration = (
   cwd: string,
   integrationRel: string,
-): string[] {
-  const routesMatch = integrationRel.match(/test_([a-z0-9_]+)_routes\.py$/i);
-  if (!routesMatch) return [];
-  const feature = routesMatch[1]!;
-  const unitDir = integrationRel
-    .replace(/\/integration\//, "/unit_test/")
-    .replace(/\/[^/]+$/, "");
-  const absDir = join(cwd, unitDir);
-  if (!existsSync(absDir)) return [];
-  const prefix = `test_${feature}_`;
-  return readdirSync(absDir)
-    .filter((f) => f.startsWith(prefix) && f.endsWith(".py"))
-    .map((f) => `${unitDir}/${f}`);
-}
+): Effect.Effect<string[], PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const routesMatch = integrationRel.match(/test_([a-z0-9_]+)_routes\.py$/i);
+    if (!routesMatch) return [];
+    const feature = routesMatch[1]!;
+    const unitDir = integrationRel
+      .replace(/\/integration\//, "/unit_test/")
+      .replace(/\/[^/]+$/, "");
+    const absDir = join(cwd, unitDir);
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(absDir))) return [];
+    const entries = yield* fs.readDirectory(absDir);
+    const prefix = `test_${feature}_`;
+    return entries
+      .filter((f) => f.startsWith(prefix) && f.endsWith(".py"))
+      .map((f) => `${unitDir}/${f}`);
+  });
 
 function rebuildPytestArgs(
-  args: string[],
+  args: ReadonlyArray<string>,
   integrationPath: string,
   unitPaths: string[],
 ): string[] {
@@ -56,36 +62,37 @@ function rebuildPytestArgs(
 }
 
 /** Derive fast unit tests from configured slow integration pytest targets. */
-export function inferInnerVerifyCommands(
+export const inferInnerVerifyCommands = (
   commands: ResolvedVerifyCommand[],
-): ResolvedVerifyCommand[] {
-  const inferred: ResolvedVerifyCommand[] = [];
-  const seen = new Set<string>();
+): Effect.Effect<ResolvedVerifyCommand[], PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const inferred: ResolvedVerifyCommand[] = [];
+    const seen = new Set<string>();
 
-  for (const cmd of commands) {
-    if (effectiveVerifyTier(cmd) !== "outer") continue;
-    const integrationPaths = pathArgsFromVerifyArgs(cmd.args).filter((p) =>
-      p.includes("integration"),
-    );
-    for (const intPath of integrationPaths) {
-      const unitPaths = unitTestPathsBesideIntegration(cmd.cwd, intPath);
-      if (unitPaths.length === 0) continue;
-      const dedupeKey = `${cmd.cwd}:${unitPaths.join("|")}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
+    for (const cmd of commands) {
+      if (effectiveVerifyTier(cmd) !== "outer") continue;
+      const integrationPaths = pathArgsFromVerifyArgs(cmd.args).filter((p) =>
+        p.includes("integration"),
+      );
+      for (const intPath of integrationPaths) {
+        const unitPaths = yield* unitTestPathsBesideIntegration(cmd.cwd, intPath);
+        if (unitPaths.length === 0) continue;
+        const dedupeKey = `${cmd.cwd}:${unitPaths.join("|")}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
 
-      const name = cmd.name.includes("integration")
-        ? cmd.name.replace("integration", "unit")
-        : `${cmd.name}-unit`;
+        const name = cmd.name.includes("integration")
+          ? cmd.name.replace("integration", "unit")
+          : `${cmd.name}-unit`;
 
-      inferred.push({
-        ...cmd,
-        name,
-        tier: "inner",
-        args: rebuildPytestArgs(cmd.args, intPath, unitPaths),
-      });
+        inferred.push({
+          ...cmd,
+          name,
+          tier: "inner",
+          args: rebuildPytestArgs(cmd.args, intPath, unitPaths),
+        });
+      }
     }
-  }
 
-  return inferred;
-}
+    return inferred;
+  });

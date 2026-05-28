@@ -30,18 +30,3 @@ export function formatAgentError(err: unknown): string {
   }
   return String(err);
 }
-
-/** Agent cleanup must never crash the dinner process. */
-export async function safeDisposeAgent(
-  agent: { [Symbol.asyncDispose]: () => Promise<void> },
-): Promise<void> {
-  try {
-    await agent[Symbol.asyncDispose]();
-  } catch (err) {
-    if (!isSdkCanceledError(err)) {
-      console.error(
-        `warn: agent dispose failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-}

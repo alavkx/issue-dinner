@@ -1,13 +1,14 @@
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { IssueWorkspaces } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
 import { formatVerifyCommandsForPrompt } from "../verify/format.js";
-import { resolveVerifyCommandsForIssue } from "../verify/resolve.js";
+import type { ResolvedVerifyCommand } from "../verify/resolve.js";
 
 export interface PromptContext {
   issue: JiraIssue;
   roots: IssueWorkspaces;
-  config: DinnerConfig;
+  config: MachineConfig;
+  verifyCommands: ResolvedVerifyCommand[];
 }
 
 function formatWorkspaceSection(roots: IssueWorkspaces): string {
@@ -22,16 +23,11 @@ ${lines.join("\n")}
 }
 
 export function buildAgentPrompt(ctx: PromptContext): string {
-  const { issue, roots, config } = ctx;
+  const { issue, roots, config, verifyCommands } = ctx;
   const ac = issue.parsed.acceptanceCriteria
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n");
 
-  const verifyCommands = resolveVerifyCommandsForIssue(
-    config,
-    issue.key,
-    roots.keys,
-  );
   const verifySection = formatVerifyCommandsForPrompt(verifyCommands);
 
   return `You are implementing one Jira **vertical slice** across a multi-root local workspace when configured.

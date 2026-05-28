@@ -1,6 +1,8 @@
+import * as FileSystem from "@effect/platform/FileSystem";
+import * as Effect from "effect/Effect";
 import { loadMachineConfig, type MachineConfig } from "../config.js";
-import { stateStoreForEpic } from "../paths.js";
-import type { BlockerPolicy, StateStore } from "../state/store.js";
+import { ConfigNotFound } from "../effect/errors.js";
+import type { BlockerPolicy } from "../state/store.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import { resolveStackForEpic } from "./stack.js";
 
@@ -8,7 +10,7 @@ export interface EpicMeal {
   epic: string;
   machine: MachineConfig;
   stack: StackConfig;
-  store: StateStore;
+  blockerPolicy: BlockerPolicy;
   exclude: Set<string>;
 }
 
@@ -16,19 +18,20 @@ export interface MealOptions {
   configPath?: string;
 }
 
-export function createMeal(epic: string, options: MealOptions = {}): EpicMeal {
-  const machine = loadMachineConfig(options.configPath);
-  const store = stateStoreForEpic(epic, machine.blockerPolicy as BlockerPolicy);
-  store.setEpic(epic);
-
-  return {
-    epic,
-    machine,
-    stack: resolveStackForEpic(epic, machine),
-    store,
-    exclude: new Set<string>(),
-  };
-}
+export const createMeal = (
+  epic: string,
+  options: MealOptions = {},
+): Effect.Effect<EpicMeal, ConfigNotFound, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const machine = yield* loadMachineConfig(options.configPath);
+    return {
+      epic,
+      machine,
+      stack: resolveStackForEpic(epic, machine),
+      blockerPolicy: machine.blockerPolicy as BlockerPolicy,
+      exclude: new Set<string>(),
+    };
+  });
 
 export function mergeExclude(
   meal: EpicMeal,

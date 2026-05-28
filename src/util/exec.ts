@@ -1,37 +1,60 @@
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import * as Command from "@effect/platform/Command";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Chunk from "effect/Chunk";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import { CommandFailed } from "../effect/errors.js";
 
-const execFileAsync = promisify(execFile);
+export { CommandFailed };
 
-export async function runCommand(
+const readStreamAsString = (
+  stream: Stream.Stream<Uint8Array, import("@effect/platform/Error").PlatformError>,
+): Effect.Effect<string, import("@effect/platform/Error").PlatformError> =>
+  Stream.runCollect(stream).pipe(
+    Effect.map((chunks) => {
+      const decoder = new TextDecoder();
+      return Chunk.reduce(chunks, "", (acc, chunk) => acc + decoder.decode(chunk));
+    }),
+  );
+
+export const runCommand = (
   command: string,
-  args: string[],
-  options?: { cwd?: string; maxBuffer?: number },
-): Promise<{ stdout: string; stderr: string }> {
-  try {
-    const { stdout, stderr } = await execFileAsync(command, args, {
-      cwd: options?.cwd,
-      maxBuffer: options?.maxBuffer ?? 10 * 1024 * 1024,
-      env: process.env,
-    });
-    return { stdout: stdout.toString(), stderr: stderr.toString() };
-  } catch (err: unknown) {
-    const e = err as NodeJS.ErrnoException & {
-      stdout?: Buffer | string;
-      stderr?: Buffer | string;
-    };
-    const error = new Error(e.message) as Error & {
-      code?: number;
-      stdout?: string;
-      stderr?: string;
-    };
-    error.code =
-      typeof e.code === "string" ? 1 : (e.code as number | undefined);
-    if (e.stdout != null) error.stdout = String(e.stdout);
-    if (e.stderr != null) error.stderr = String(e.stderr);
-    throw error;
-  }
-}
+  args: ReadonlyArray<string>,
+  options?: { cwd?: string },
+): Effect.Effect<
+  { stdout: string; stderr: string },
+  CommandFailed | import("@effect/platform/Error").PlatformError,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let cmd = Command.make(command, ...args);
+      if (options?.cwd) {
+        cmd = Command.workingDirectory(cmd, options.cwd);
+      }
+
+      const process = yield* Command.start(cmd);
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [readStreamAsString(process.stdout), readStreamAsString(process.stderr), process.exitCode],
+        { concurrency: "unbounded" },
+      );
+
+      if (exitCode !== 0) {
+        return yield* Effect.fail(
+          new CommandFailed({
+            command,
+            args: [...args],
+            code: exitCode,
+            stdout,
+            stderr,
+            message: `${command} exited with code ${exitCode}`,
+          }),
+        );
+      }
+
+      return { stdout, stderr };
+    }),
+  );
 
 /** Safe single-quoted shell argument (falls back when special chars present). */
 export function shellQuote(arg: string): string {
@@ -39,11 +62,29 @@ export function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-export function commandExists(command: string): boolean {
-  try {
-    execFileSync("which", [command], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
+export const commandExists = (
+  command: string,
+): Effect.Effect<boolean, never, CommandExecutor.CommandExecutor> =>
+  commandExitCode("which", [command]).pipe(
+    Effect.map((code) => code === 0),
+    Effect.catchAll(() => Effect.succeed(false)),
+  );
+
+export const commandExitCode = (
+  command: string,
+  args: ReadonlyArray<string>,
+  options?: { cwd?: string },
+): Effect.Effect<
+  number,
+  import("@effect/platform/Error").PlatformError,
+  CommandExecutor.CommandExecutor
+> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let cmd = Command.make(command, ...args);
+      if (options?.cwd) {
+        cmd = Command.workingDirectory(cmd, options.cwd);
+      }
+      return yield* Command.exitCode(cmd);
+    }),
+  );

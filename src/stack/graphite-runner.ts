@@ -1,64 +1,60 @@
+import * as Effect from "effect/Effect";
 import { runCommand } from "../util/exec.js";
 import type { GraphiteStackPort } from "./graphite-port.js";
 
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await runCommand("git", args, { cwd });
-  return stdout.trim();
-}
-
-async function gt(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await runCommand(
-    "gt",
-    ["--no-interactive", "-q", "--cwd", cwd, ...args],
-    { cwd },
-  );
-  return stdout.trim();
-}
-
 export function createGraphiteStackPort(): GraphiteStackPort {
+  const git = (cwd: string, ...args: string[]) =>
+    runCommand("git", args, { cwd }).pipe(
+      Effect.map(({ stdout }) => stdout.trim()),
+    );
+
+  const gt = (cwd: string, ...args: string[]) =>
+    runCommand("gt", ["--no-interactive", "-q", "--cwd", cwd, ...args], {
+      cwd,
+    }).pipe(Effect.map(({ stdout }) => stdout.trim()));
+
   const port: GraphiteStackPort = {
-    async branchExists(cwd, branch) {
-      try {
-        await git(cwd, "rev-parse", "--verify", `refs/heads/${branch}`);
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    branchExists: (cwd, branch) =>
+      git(cwd, "rev-parse", "--verify", `refs/heads/${branch}`).pipe(
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false)),
+      ),
 
-    currentBranch(cwd) {
-      return git(cwd, "branch", "--show-current");
-    },
+    currentBranch: (cwd) => git(cwd, "branch", "--show-current"),
 
-    async isWorkingTreeClean(cwd) {
-      const status = await git(cwd, "status", "--porcelain");
-      return status.length === 0;
-    },
+    isWorkingTreeClean: (cwd) =>
+      git(cwd, "status", "--porcelain").pipe(
+        Effect.map((status) => status.length === 0),
+      ),
 
-    async checkoutBranch(cwd, branch) {
-      try {
-        await gt(cwd, "branch", "checkout", branch);
-      } catch {
-        await git(cwd, "checkout", branch);
-      }
-    },
+    checkoutBranch: (cwd, branch) =>
+      gt(cwd, "branch", "checkout", branch).pipe(
+        Effect.catchAll(() =>
+          git(cwd, "checkout", branch).pipe(Effect.asVoid),
+        ),
+      ),
 
-    async trackBranch(cwd, branch, parent) {
-      if ((await port.currentBranch(cwd)) !== branch) {
-        await port.checkoutBranch(cwd, branch);
-      }
-      await gt(cwd, "track", "--parent", parent);
-    },
+    trackBranch: (cwd, branch, parent) =>
+      Effect.gen(function* () {
+        if ((yield* port.currentBranch(cwd)) !== branch) {
+          yield* port.checkoutBranch(cwd, branch);
+        }
+        yield* gt(cwd, "track", "--parent", parent).pipe(Effect.asVoid);
+      }),
 
-    async createStackedBranch(cwd, branch, parent) {
-      if (!(await port.branchExists(cwd, parent))) {
-        throw new Error(
-          `${cwd}: parent branch "${parent}" does not exist — run prep for the epic base first`,
-        );
-      }
-      await port.checkoutBranch(cwd, parent);
-      await gt(cwd, "branch", "create", branch);
-    },
+    createStackedBranch: (cwd, branch, parent) =>
+      Effect.gen(function* () {
+        if (!(yield* port.branchExists(cwd, parent))) {
+          return yield* Effect.fail(
+            new Error(
+              `${cwd}: parent branch "${parent}" does not exist — run prep for the epic base first`,
+            ),
+          );
+        }
+        yield* port.checkoutBranch(cwd, parent);
+        yield* gt(cwd, "branch", "create", branch).pipe(Effect.asVoid);
+      }),
   };
+
   return port;
 }

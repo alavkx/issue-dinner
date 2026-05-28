@@ -4,11 +4,13 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import * as Effect from "effect/Effect";
+import type { MachineConfig } from "../config.js";
+import { runEffect } from "../effect/test-runtime.js";
 import { resolveVerifyCommandsForIssue } from "./resolve.js";
 import { effectiveVerifyTier } from "./tier.js";
 
-const base: DinnerConfig = {
+const base: MachineConfig = {
   model: "composer-2.5",
   workspaces: { backend: "/tmp/be", frontend: "/tmp/fe" },
   defaultWorkspace: "backend",
@@ -23,38 +25,34 @@ const base: DinnerConfig = {
   quietRecovery: true,
 };
 
-describe("resolveVerifyCommands", () => {
-  it("prefers per-issue commands over workspace defaults", () => {
-    const config: DinnerConfig = {
-      ...base,
-      verifyCommands: {
-        backend: [{ name: "default", command: "echo", args: ["workspace"] }],
-      },
-      issueVerifyCommands: {
-        "CPD-636": [{ name: "specific", command: "echo", args: ["issue"] }],
-      },
-    };
-    const cmds = resolveVerifyCommandsForIssue(config, "CPD-636", ["backend"]);
-    assert.equal(cmds[0]?.name, "specific");
-    assert.equal(cmds[0]?.cwd, "/tmp/be");
-  });
+describe("resolveVerifyCommandsForIssue", () => {
+  it("prefers per-issue commands over workspace defaults", () =>
+    runEffect(
+      resolveVerifyCommandsForIssue(configWithIssueOverride(), "CPD-636", [
+        "backend",
+      ]).pipe(
+        Effect.tap((cmds) => {
+          assert.equal(cmds[0]?.name, "specific");
+          assert.equal(cmds[0]?.cwd, "/tmp/be");
+        }),
+        Effect.asVoid,
+      ),
+    ));
 
-  it("runs verifyCommands for each workspace root in a multi-root issue", () => {
-    const config: DinnerConfig = {
-      ...base,
-      verifyCommands: {
-        backend: [{ name: "be-test", command: "echo", args: ["be"] }],
-        frontend: [{ name: "fe-test", command: "echo", args: ["fe"] }],
-      },
-    };
-    const cmds = resolveVerifyCommandsForIssue(config, "CPD-636", [
-      "backend",
-      "frontend",
-    ]);
-    assert.equal(cmds.length, 2);
-    assert.equal(cmds[0]?.cwd, "/tmp/be");
-    assert.equal(cmds[1]?.cwd, "/tmp/fe");
-  });
+  it("runs verifyCommands for each workspace root in a multi-root issue", () =>
+    runEffect(
+      resolveVerifyCommandsForIssue(configWithWorkspaceDefaults(), "CPD-636", [
+        "backend",
+        "frontend",
+      ]).pipe(
+        Effect.tap((cmds) => {
+          assert.equal(cmds.length, 2);
+          assert.equal(cmds[0]?.cwd, "/tmp/be");
+          assert.equal(cmds[1]?.cwd, "/tmp/fe");
+        }),
+        Effect.asVoid,
+      ),
+    ));
 
   it("infers inner unit tests from outer-only issue commands", () => {
     const cwd = mkdtempSync(join(tmpdir(), "issue-dinner-resolve-"));
@@ -65,7 +63,7 @@ describe("resolveVerifyCommands", () => {
     writeFileSync(join(unitDir, "test_notification_service.py"), "");
     writeFileSync(join(intDir, "test_notification_routes.py"), "");
 
-    const config: DinnerConfig = {
+    const config: MachineConfig = {
       ...base,
       workspaces: { backend: cwd },
       issueVerifyCommands: {
@@ -85,9 +83,40 @@ describe("resolveVerifyCommands", () => {
         ],
       },
     };
-    const cmds = resolveVerifyCommandsForIssue(config, "CPD-638", ["backend"]);
-    const inner = cmds.filter((c) => effectiveVerifyTier(c) === "inner");
-    assert.ok(inner.length >= 1);
-    assert.ok(inner.some((c) => c.args.some((a) => a.includes("unit_test"))));
+
+    return runEffect(
+      resolveVerifyCommandsForIssue(config, "CPD-638", ["backend"]).pipe(
+        Effect.tap((cmds) => {
+          const inner = cmds.filter((c) => effectiveVerifyTier(c) === "inner");
+          assert.ok(inner.length >= 1);
+          assert.ok(
+            inner.some((c) => c.args.some((a) => a.includes("unit_test"))),
+          );
+        }),
+        Effect.asVoid,
+      ),
+    );
   });
 });
+
+function configWithIssueOverride(): MachineConfig {
+  return {
+    ...base,
+    verifyCommands: {
+      backend: [{ name: "default", command: "echo", args: ["workspace"] }],
+    },
+    issueVerifyCommands: {
+      "CPD-636": [{ name: "specific", command: "echo", args: ["issue"] }],
+    },
+  };
+}
+
+function configWithWorkspaceDefaults(): MachineConfig {
+  return {
+    ...base,
+    verifyCommands: {
+      backend: [{ name: "be-test", command: "echo", args: ["be"] }],
+      frontend: [{ name: "fe-test", command: "echo", args: ["fe"] }],
+    },
+  };
+}
