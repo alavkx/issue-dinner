@@ -19,7 +19,6 @@ export function stayAwakeInvocationFlags(
 
 let started = false;
 
-/** Hold an idle-sleep assertion for this process until it exits (macOS only). */
 export const startStayAwake = (): Effect.Effect<
   void,
   never,

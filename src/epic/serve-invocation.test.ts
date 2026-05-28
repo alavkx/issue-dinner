@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildServeInvocation } from "./serve-invocation.js";
 import { isSelfHealEnabled, NO_SELF_HEAL_FLAG } from "../runtime/self-heal-flags.js";
-import { STAY_AWAKE_FLAG } from "../runtime/stay-awake.js";
 
 describe("serve self-heal defaults", () => {
   it("does not pass self-heal flags when enabled by default", () => {
@@ -36,6 +35,6 @@ describe("serve self-heal defaults", () => {
     const cmd = buildServeInvocation("/usr/local/bin/issue-dinner", "CPD-635", undefined, {
       stayAwake: false,
     });
-    assert.doesNotMatch(cmd, new RegExp(STAY_AWAKE_FLAG));
+    assert.doesNotMatch(cmd, /--stay-awake/);
   });
 });
