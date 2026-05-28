@@ -11,6 +11,13 @@ import { parseTopLevelArgv } from "./epic/parse-argv.js";
 import { runMealArgv } from "./epic/run-meal.js";
 import { ensureAcli, fetchIssue } from "./jira/acli.js";
 import { stateStoreLayer } from "./paths.js";
+import {
+  formatKitchenStatus,
+  getKitchenStatus,
+  processKitchenInbox,
+} from "./self-heal/kitchen.js";
+import { contributeAppliedPatches } from "./self-heal/contribute.js";
+import { runWatchdog, stripWatchArgv } from "./runtime/watchdog.js";
 
 installProcessGuards();
 
@@ -90,22 +97,86 @@ program
     );
   });
 
+const kitchen = program
+  .command("kitchen")
+  .description("Self-heal queue for patching issue-dinner during serve runs");
+
+kitchen
+  .command("status")
+  .description("List inbox, applied, and failed kitchen patches")
+  .action(() => {
+    void Effect.runPromise(
+      Effect.gen(function* () {
+        const status = yield* getKitchenStatus();
+        console.log(formatKitchenStatus(status));
+      }).pipe(Effect.provide(PlatformLive)),
+    );
+  });
+
+kitchen
+  .command("apply")
+  .description("Apply inbox patches (typecheck + build)")
+  .option("--dry-run", "Validate manifests without writing files")
+  .action((opts: { dryRun?: boolean }) => {
+    void Effect.runPromise(
+      processKitchenInbox({ dryRun: opts.dryRun }).pipe(
+        Effect.provide(PlatformLive),
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            console.log(
+              `Applied: ${result.applied.join(", ") || "(none)"}; failed: ${result.failed.join(", ") || "(none)"}`,
+            );
+          }),
+        ),
+      ),
+    );
+  });
+
+kitchen
+  .command("contribute")
+  .description("Open PRs for applied kitchen patches against main")
+  .option("--dry-run", "Print contribution plan without git/gh changes")
+  .option("--patch <id>", "Contribute a single patch id")
+  .option("--base <branch>", "Target base branch (default: main or ISSUE_DINNER_CONTRIBUTE_BASE)")
+  .option("--remote <name>", "Git remote to push (default: origin)")
+  .action((opts: { dryRun?: boolean; patch?: string; base?: string; remote?: string }) => {
+    void Effect.runPromise(
+      contributeAppliedPatches({
+        dryRun: opts.dryRun,
+        patchId: opts.patch,
+        baseBranch: opts.base,
+        remote: opts.remote,
+      }).pipe(
+        Effect.provide(PlatformLive),
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            console.log(
+              `Contributed: ${result.contributed.join(", ") || "(none)"}; skipped: ${result.skipped.join(", ") || "(none)"}; failed: ${result.failed.map((f) => f.patchId).join(", ") || "(none)"}`,
+            );
+          }),
+        ),
+      ),
+    );
+  });
+
+const rawArgv = process.argv.slice(2);
+const strippedWatch = stripWatchArgv(rawArgv);
+
 const mainProgram = Effect.gen(function* () {
-  const argv = process.argv.slice(2);
-  const parsed = parseTopLevelArgv(argv);
+  const parsed = parseTopLevelArgv([...strippedWatch.argv]);
 
   if (parsed.mode === "meal") {
-    yield* runMealArgv(parsed.epic, parsed.rest, parsed.configPath);
+    yield* runMealArgv(parsed.epic, [...parsed.rest], parsed.configPath);
     return;
   }
 
-  if (argv.length === 0) {
+  if (strippedWatch.argv.length === 0) {
     program.outputHelp();
     return;
   }
 
   yield* Effect.tryPromise({
-    try: () => program.parseAsync(parsed.rest, { from: "user" }),
+    try: () => program.parseAsync(strippedWatch.argv, { from: "user" }),
     catch: (err) => err,
   }).pipe(
     Effect.catchAll((err) => {
@@ -117,8 +188,14 @@ const mainProgram = Effect.gen(function* () {
   );
 });
 
+const runMain = strippedWatch.watch
+  ? runWatchdog(strippedWatch.argv, {
+      restartOnCrash: strippedWatch.restartOnCrash,
+    })
+  : mainProgram;
+
 NodeRuntime.runMain(
-  mainProgram.pipe(
+  runMain.pipe(
     Effect.provide(PlatformLive),
     Effect.catchTags({
       ConfigNotFound: (e: ConfigNotFound) =>

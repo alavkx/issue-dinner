@@ -60,6 +60,8 @@ export interface ProcessOptions {
   skipCommit?: boolean;
   stack?: StackConfig;
   epic?: string;
+  selfHeal?: boolean;
+  kitchenRoot?: string;
 }
 
 export interface ProcessResult {
@@ -249,7 +251,14 @@ export const processIssue = (
       issue.key,
       roots.keys,
     );
-    const prompt = buildAgentPrompt({ issue, roots, config, verifyCommands });
+    const prompt = buildAgentPrompt({
+      issue,
+      roots,
+      config,
+      verifyCommands,
+      selfHeal: options.selfHeal,
+      kitchenRoot: options.kitchenRoot,
+    });
     const transcript = options.epic
       ? yield* openTranscript(options.epic, issue.key)
       : undefined;

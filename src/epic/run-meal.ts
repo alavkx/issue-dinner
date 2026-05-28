@@ -27,6 +27,22 @@ import { printServeSummary } from "../serve/summary.js";
 import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
 import { formatAgentError } from "../agent/sdk-errors.js";
 import { setServeShutdownHandler } from "../runtime/guards.js";
+import { resolveProjectRoot } from "../runtime/project-root.js";
+import {
+  isSelfHealEnabled,
+} from "../runtime/self-heal-flags.js";
+import {
+  NO_WATCH_RESTART_ON_CRASH_FLAG,
+  WATCH_FLAG,
+  WATCH_RESTART_ON_CRASH_FLAG,
+} from "../runtime/watchdog.js";
+import { runKitchenBetweenCourses, type KitchenBuildPort } from "../self-heal/kitchen.js";
+import {
+  contributeAppliedPatches,
+  formatContributeReminder,
+  listPendingContributions,
+  type KitchenGitPort,
+} from "../self-heal/contribute.js";
 import * as out from "../ui/out.js";
 import { filterMenuIssues, parseKeyList } from "../serve/filter.js";
 import { createGraphiteStackPort } from "../stack/graphite-runner.js";
@@ -34,39 +50,11 @@ import { prepEpicStack } from "../stack/prep.js";
 import { buildEpicStackPlans } from "../stack/plan.js";
 import { storyBranchName } from "../stack/names.js";
 import { commandExists, shellQuote } from "../util/exec.js";
+import { buildServeInvocation } from "./serve-invocation.js";
 import { assertMealCommand } from "./parse-argv.js";
 import { createMeal, mergeExclude, type EpicMeal } from "./meal.js";
 import type { JiraIssue } from "../jira/acli.js";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
-
-function buildServeInvocation(
-  cliExecutable: string,
-  epic: string,
-  configPath: string | undefined,
-  flags: {
-    continueOnError?: boolean;
-    skipDone?: boolean;
-    exclude?: string;
-    only?: string;
-    force?: boolean;
-    skipVerify?: boolean;
-    skipPreflight?: boolean;
-    dryRun?: boolean;
-  },
-): string {
-  const parts = [shellQuote(cliExecutable), shellQuote(epic)];
-  if (configPath) parts.push("-c", shellQuote(configPath));
-  parts.push("serve");
-  if (flags.dryRun) parts.push("--dry-run");
-  if (flags.skipDone) parts.push("--skip-done");
-  if (flags.continueOnError) parts.push("--continue-on-error");
-  if (flags.force) parts.push("--force");
-  if (flags.skipVerify) parts.push("--skip-verify");
-  if (flags.skipPreflight) parts.push("--skip-preflight");
-  if (flags.only) parts.push("--only", shellQuote(flags.only));
-  if (flags.exclude) parts.push("--exclude", shellQuote(flags.exclude));
-  return parts.join(" ");
-}
 
 function flagValue(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -148,7 +136,7 @@ const runMealWithStore = (
 ): Effect.Effect<
   void,
   MissingCursorApiKey | unknown,
-  StateStore | CommandExecutor.CommandExecutor | FileSystem.FileSystem
+  StateStore | CommandExecutor.CommandExecutor | FileSystem.FileSystem | KitchenBuildPort | KitchenGitPort
 > =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -263,6 +251,11 @@ const runMealWithStore = (
       }
       case "serve": {
         yield* ensureAcli;
+        const selfHeal = isSelfHealEnabled(args);
+        const kitchenRoot = selfHeal ? yield* resolveProjectRoot() : undefined;
+        const serveArgv: string[] = [meal.epic];
+        if (configPath) serveArgv.push("-c", configPath);
+        serveArgv.push("serve", ...args);
         const exclude = mergeExclude(meal, flagValue(args, "--exclude"));
         const children = yield* listEpicChildren(meal.epic);
         const issues = sortByDependencies(
@@ -322,6 +315,19 @@ const runMealWithStore = (
         }
 
         out.banner(`Issue dinner — ${meal.epic} (${issues.length} courses)`);
+        if (selfHeal) {
+          out.info(`Self-heal kitchen active (${kitchenRoot})`);
+        }
+
+        if (selfHeal && !dryRun) {
+          yield* runKitchenBetweenCourses(serveArgv, "before serve").pipe(
+            Effect.catchAll((err) =>
+              Effect.sync(() => {
+                out.warn(`kitchen: ${String(err)}`);
+              }),
+            ),
+          );
+        }
 
         let logger: ServeLogger | undefined;
         if (!dryRun) {
@@ -414,7 +420,13 @@ const runMealWithStore = (
               issue,
               meal.machine,
               apiKey,
-              { skipVerify, stack: meal.stack, epic: meal.epic },
+              {
+                skipVerify,
+                stack: meal.stack,
+                epic: meal.epic,
+                selfHeal,
+                kitchenRoot,
+              },
             ).pipe(
               Effect.catchAll((err) =>
                 Effect.gen(function* () {
@@ -485,6 +497,19 @@ const runMealWithStore = (
               process.exitCode = 2;
               break;
             }
+
+            if (selfHeal && !dryRun) {
+              yield* runKitchenBetweenCourses(
+                serveArgv,
+                `after ${issue.key}`,
+              ).pipe(
+                Effect.catchAll((err) =>
+                  Effect.sync(() => {
+                    out.warn(`kitchen: ${String(err)}`);
+                  }),
+                ),
+              );
+            }
           }
         } finally {
           if (sigintHandler) {
@@ -493,6 +518,20 @@ const runMealWithStore = (
           setServeShutdownHandler(undefined);
           if (!dryRun) {
             recoverStale();
+            if (selfHeal && kitchenRoot) {
+              const pending = yield* listPendingContributions(kitchenRoot);
+              const reminder = formatContributeReminder(pending);
+              if (reminder) out.info(reminder);
+              if (hasFlag(args, "--kitchen-contribute") && pending.length > 0) {
+                yield* contributeAppliedPatches().pipe(
+                  Effect.catchAll((err) =>
+                    Effect.sync(() => {
+                      out.warn(`kitchen contribute: ${String(err)}`);
+                    }),
+                  ),
+                );
+              }
+            }
             yield* printServeSummary({
               epic: meal.epic,
               stack: meal.stack,
@@ -571,6 +610,12 @@ const runMealWithStore = (
           skipVerify: hasFlag(args, "--skip-verify"),
           skipPreflight: true,
           dryRun,
+          selfHeal: isSelfHealEnabled(args),
+          watch: hasFlag(args, WATCH_FLAG),
+          watchRestartOnCrash:
+            !hasFlag(args, NO_WATCH_RESTART_ON_CRASH_FLAG) &&
+            (hasFlag(args, WATCH_RESTART_ON_CRASH_FLAG) ||
+              hasFlag(args, WATCH_FLAG)),
         },
         );
 
@@ -607,6 +652,8 @@ const runMealWithStore = (
           );
         }
         const cookArgs = args.slice(1);
+        const selfHeal = isSelfHealEnabled(cookArgs);
+        const kitchenRoot = selfHeal ? yield* resolveProjectRoot() : undefined;
         yield* ensureAcli;
         if (
           !hasFlag(cookArgs, "--dry-run") &&
@@ -629,6 +676,8 @@ const runMealWithStore = (
           resumeAgentId: flagValue(cookArgs, "--resume"),
           skipVerify: hasFlag(cookArgs, "--skip-verify"),
           stack: meal.stack,
+          selfHeal,
+          kitchenRoot,
         });
         if (result.status === "error") process.exitCode = 2;
         if (result.status === "agent_complete") process.exitCode = 2;
@@ -646,7 +695,7 @@ export const runMealArgv = (
 ): Effect.Effect<
   void,
   ConfigNotFound | MissingCursorApiKey | TmuxNotFound | unknown,
-  FileSystem.FileSystem | CommandExecutor.CommandExecutor
+  FileSystem.FileSystem | CommandExecutor.CommandExecutor | KitchenBuildPort | KitchenGitPort
 > =>
   Effect.gen(function* () {
     const meal = yield* createMeal(epic, { configPath });
