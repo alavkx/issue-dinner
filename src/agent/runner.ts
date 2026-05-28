@@ -3,7 +3,7 @@ import type { MachineConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
   formatWorkspacesLabel,
-  localAgentOptions,
+  courseAgentOptions,
   resolveIssueWorkspaces,
   type IssueWorkspaces,
 } from "../config/workspaces.js";
@@ -29,6 +29,11 @@ import {
   verificationIsStrongEnough,
 } from "./handoff.js";
 import { buildAgentPrompt } from "./prompt.js";
+import { buildPostHealCourseResumePrompt } from "../self-heal/heal-prompt.js";
+import {
+  attemptSelfHealFromCourse,
+  type ServeHealContext,
+} from "../self-heal/heal-agent.js";
 import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
 import { drainRunStream } from "./stream-handler.js";
 import {
@@ -52,6 +57,8 @@ import {
 import * as out from "../ui/out.js";
 import * as Effect from "effect/Effect";
 
+export type { ServeHealContext };
+
 export interface ProcessOptions {
   dryRun?: boolean;
   stream?: boolean;
@@ -62,6 +69,8 @@ export interface ProcessOptions {
   epic?: string;
   selfHeal?: boolean;
   kitchenRoot?: string;
+  serveHeal?: ServeHealContext;
+  postHealResume?: { fixSummary: string };
 }
 
 export interface ProcessResult {
@@ -251,7 +260,7 @@ export const processIssue = (
       issue.key,
       roots.keys,
     );
-    const prompt = buildAgentPrompt({
+    const basePrompt = buildAgentPrompt({
       issue,
       roots,
       config,
@@ -265,6 +274,25 @@ export const processIssue = (
     if (transcript) {
       yield* appendTranscriptLine(transcript, `Course start: ${issue.summary}`);
     }
+
+    const maybeHeal = (
+      trigger: import("../self-heal/heal-resume.js").HealTriggerKind,
+      detail: string,
+      verifyOutput?: string,
+      courseAgentId?: string,
+    ) =>
+      attemptSelfHealFromCourse({
+        issue,
+        config,
+        apiKey,
+        selfHeal: options.selfHeal,
+        kitchenRoot: options.kitchenRoot,
+        serveHeal: options.serveHeal,
+        trigger,
+        detail,
+        verifyOutput,
+        courseAgentId,
+      });
 
     let branches: Record<string, string> = {};
     if (options.stack && !options.dryRun) {
@@ -284,6 +312,7 @@ export const processIssue = (
           transcriptPath: transcript?.path,
         });
         out.error(`${issue.key}: ${msg}`);
+        yield* maybeHeal("orchestration", msg);
         return { issueKey: issue.key, status: "error", error: msg };
       }
 
@@ -319,6 +348,7 @@ export const processIssue = (
           transcriptPath: transcript?.path,
         });
         out.error(`${issue.key}: stack prep failed — ${message}`);
+        yield* maybeHeal("recovery_exhausted", message);
         return { issueKey: issue.key, status: "error", error: message };
       }
 
@@ -339,10 +369,24 @@ export const processIssue = (
 
     if (options.dryRun) {
       console.log(`[dry-run] ${issue.key} → ${formatWorkspacesLabel(roots)}\n`);
-      console.log(prompt.slice(0, 1200));
+      console.log(basePrompt.slice(0, 1200));
       console.log("\n… (truncated)\n");
       return { issueKey: issue.key, status: "dry-run" };
     }
+
+    if (options.postHealResume) {
+      yield* store.appendResolutionStep(
+        issue.key,
+        "Resuming course after issue-dinner self-heal",
+      );
+    }
+
+    const prompt = options.postHealResume
+      ? buildPostHealCourseResumePrompt({
+          issue,
+          fixSummary: options.postHealResume.fixSummary,
+        })
+      : basePrompt;
 
     yield* store.upsert({
       issueKey: issue.key,
@@ -352,11 +396,14 @@ export const processIssue = (
       branches,
       transcriptPath: transcript?.path,
       startedAt: new Date().toISOString(),
+      ...(options.postHealResume
+        ? { error: undefined, verifyError: undefined }
+        : {}),
     });
 
     out.courseHeader(issue.key, issue.summary, "running");
     out.info(formatWorkspacesLabel(roots));
-    const local = localAgentOptions(config, roots.cwds);
+    const local = courseAgentOptions(config, roots, options.kitchenRoot);
     out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
     if (transcript) {
       yield* appendTranscriptLine(
@@ -436,6 +483,7 @@ export const processIssue = (
               resultPreview: msg.slice(0, 500),
               transcriptPath: transcript?.path,
             });
+            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -483,6 +531,7 @@ export const processIssue = (
               resultPreview: msg.slice(0, 500),
               transcriptPath: transcript?.path,
             });
+            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -528,6 +577,7 @@ export const processIssue = (
               error: msg,
               resultPreview: msg.slice(0, 500),
             });
+            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -786,6 +836,12 @@ export const processIssue = (
             transcriptPath: transcript?.path,
           });
           out.error(`${issue.key} verify failed: ${verify.error}`);
+          yield* maybeHeal(
+            "verify",
+            verify.error ?? "verify failed",
+            verify.output,
+            agent.agentId,
+          );
           return {
             issueKey: issue.key,
             status: "agent_complete" as const,
@@ -848,6 +904,7 @@ export const processIssue = (
           });
 
           out.error(`${issue.key}: ${message}`);
+          yield* maybeHeal("orchestration", message);
           return { issueKey: issue.key, status: "error" as const, error: message };
         }),
       ),

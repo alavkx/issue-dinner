@@ -36,13 +36,19 @@ import {
   WATCH_FLAG,
   WATCH_RESTART_ON_CRASH_FLAG,
 } from "../runtime/watchdog.js";
-import { runKitchenBetweenCourses, type KitchenBuildPort } from "../self-heal/kitchen.js";
+import type { KitchenBuildPort } from "../self-heal/kitchen.js";
 import {
-  contributeAppliedPatches,
   formatContributeReminder,
   listPendingContributions,
   type KitchenGitPort,
 } from "../self-heal/contribute.js";
+import { syncDurableHealsToPackage } from "../self-heal/durable-patches.js";
+import {
+  clearHealResume,
+  loadHealResume,
+} from "../self-heal/heal-resume.js";
+import { reviewAndContributeHeals } from "../self-heal/review-agent.js";
+import { runCommand } from "../util/exec.js";
 import * as out from "../ui/out.js";
 import { filterMenuIssues, parseKeyList } from "../serve/filter.js";
 import { createGraphiteStackPort } from "../stack/graphite-runner.js";
@@ -316,17 +322,23 @@ const runMealWithStore = (
 
         out.banner(`Issue dinner — ${meal.epic} (${issues.length} courses)`);
         if (selfHeal) {
-          out.info(`Self-heal kitchen active (${kitchenRoot})`);
+          out.info(`Self-heal active (${kitchenRoot})`);
         }
 
-        if (selfHeal && !dryRun) {
-          yield* runKitchenBetweenCourses(serveArgv, "before serve").pipe(
-            Effect.catchAll((err) =>
-              Effect.sync(() => {
-                out.warn(`kitchen: ${String(err)}`);
-              }),
-            ),
+        if (selfHeal && !dryRun && kitchenRoot) {
+          const synced = yield* syncDurableHealsToPackage(kitchenRoot).pipe(
+            Effect.catchAll(() => Effect.succeed([] as string[])),
           );
+          if (synced.length > 0) {
+            out.info(`Synced ${synced.length} durable heal(s) into package`);
+            yield* runCommand("npm", ["run", "build"], { cwd: kitchenRoot }).pipe(
+              Effect.catchAll((err) =>
+                Effect.sync(() => {
+                  out.warn(`heal sync build: ${String(err)}`);
+                }),
+              ),
+            );
+          }
         }
 
         let logger: ServeLogger | undefined;
@@ -416,6 +428,20 @@ const runMealWithStore = (
             }
 
             const apiKey = yield* cursorApiKey;
+
+            const healResume =
+              selfHeal && !dryRun ? yield* loadHealResume() : undefined;
+            const isPostHealResume =
+              healResume &&
+              healResume.epic === meal.epic &&
+              healResume.issueKey === issue.key &&
+              healResume.postHealResume;
+
+            if (isPostHealResume) {
+              yield* clearHealResume();
+              out.info(`${issue.key}: resuming after issue-dinner self-heal`);
+            }
+
             const result = yield* processIssue(
               issue,
               meal.machine,
@@ -426,6 +452,22 @@ const runMealWithStore = (
                 epic: meal.epic,
                 selfHeal,
                 kitchenRoot,
+                serveHeal: {
+                  serveArgv,
+                  courseIndex,
+                  epic: meal.epic,
+                  configPath,
+                },
+                ...(isPostHealResume
+                  ? {
+                      resumeAgentId: healResume!.courseAgentId,
+                      postHealResume: {
+                        fixSummary:
+                          healResume!.fixSummary ??
+                          "issue-dinner source was patched.",
+                      },
+                    }
+                  : {}),
               },
             ).pipe(
               Effect.catchAll((err) =>
@@ -497,19 +539,6 @@ const runMealWithStore = (
               process.exitCode = 2;
               break;
             }
-
-            if (selfHeal && !dryRun) {
-              yield* runKitchenBetweenCourses(
-                serveArgv,
-                `after ${issue.key}`,
-              ).pipe(
-                Effect.catchAll((err) =>
-                  Effect.sync(() => {
-                    out.warn(`kitchen: ${String(err)}`);
-                  }),
-                ),
-              );
-            }
           }
         } finally {
           if (sigintHandler) {
@@ -522,11 +551,20 @@ const runMealWithStore = (
               const pending = yield* listPendingContributions(kitchenRoot);
               const reminder = formatContributeReminder(pending);
               if (reminder) out.info(reminder);
-              if (hasFlag(args, "--kitchen-contribute") && pending.length > 0) {
-                yield* contributeAppliedPatches().pipe(
+
+              if (
+                !hasFlag(args, "--no-heal-review") &&
+                pending.length > 0
+              ) {
+                const apiKey = yield* cursorApiKey;
+                yield* reviewAndContributeHeals({
+                  kitchenRoot,
+                  config: meal.machine,
+                  apiKey,
+                }).pipe(
                   Effect.catchAll((err) =>
                     Effect.sync(() => {
-                      out.warn(`kitchen contribute: ${String(err)}`);
+                      out.warn(`heal review: ${String(err)}`);
                     }),
                   ),
                 );

@@ -18,16 +18,10 @@ import {
 } from "./contribute.js";
 import {
   CONTRIBUTION_FILE,
-  KitchenApplyFailed,
   kitchenApplied,
-  kitchenInbox,
   MANIFEST_FILE,
 } from "./patch.js";
-import {
-  KitchenBuildPort,
-  processKitchenInbox,
-  type KitchenBuildCommands,
-} from "./kitchen.js";
+import { formatHealStatus, getHealStatus } from "./kitchen.js";
 
 describe("contribution formatting", () => {
   it("builds branch names, commits, and PR text from manifests", () => {
@@ -59,95 +53,61 @@ describe("formatContributeReminder", () => {
   it("lists pending patch ids", () => {
     assert.match(
       formatContributeReminder(["fix-a", "fix-b"])!,
-      /kitchen contribute/,
+      /heal contribute/,
     );
   });
 });
 
-describe("processKitchenInbox", () => {
-  it("applies a valid patch and moves it to applied/", () =>
-    withKitchenRoot(({ root }) =>
+describe("getHealStatus", () => {
+  it("lists durable heals and pending contribution", () =>
+    withHealRoot(({ root }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(join(root, "src", "target.ts"), "original\n");
+        const prevState = process.env.ISSUE_DINNER_STATE_DIR;
+        const stateDir = yield* fs.makeTempDirectory();
+        process.env.ISSUE_DINNER_STATE_DIR = stateDir;
 
-        const patchDir = join(kitchenInbox(root), "fix-target");
-        yield* fs.makeDirectory(patchDir, { recursive: true });
-        yield* fs.writeFileString(
-          join(patchDir, MANIFEST_FILE),
-          JSON.stringify({
-            id: "fix-target",
-            issueKey: "CPD-636",
-            reason: "test patch",
-            files: [{ path: "src/target.ts", content: "patched\n" }],
-          }),
-        );
-
-        const result = yield* processKitchenInbox();
-        assert.deepEqual(result.applied, ["fix-target"]);
-        assert.deepEqual(result.failed, []);
-        assert.equal(yield* fs.readFileString(join(root, "src", "target.ts")), "patched\n");
-        assert.equal(yield* fs.exists(join(kitchenApplied(root), "fix-target", MANIFEST_FILE)), true);
-        assert.equal(yield* fs.exists(join(kitchenInbox(root), "fix-target")), false);
-      }),
-    ));
-
-  it("rolls back file changes when validation fails", () =>
-    withKitchenRoot(
-      ({ root }) =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          yield* fs.writeFileString(join(root, "src", "target.ts"), "original\n");
-
-          const patchDir = join(kitchenInbox(root), "bad-target");
-          yield* fs.makeDirectory(patchDir, { recursive: true });
+        try {
+          yield* fs.makeDirectory(join(stateDir, "heals", "heal-a"), {
+            recursive: true,
+          });
           yield* fs.writeFileString(
-            join(patchDir, MANIFEST_FILE),
+            join(stateDir, "heals", "heal-a", MANIFEST_FILE),
             JSON.stringify({
-              id: "bad-target",
-              files: [{ path: "src/target.ts", content: "broken\n" }],
+              id: "heal-a",
+              issueKey: "CPD-1",
+              reason: "test",
+              files: [{ path: "src/x.ts", content: "x\n" }],
             }),
           );
 
-          const result = yield* processKitchenInbox();
-          assert.deepEqual(result.applied, []);
-          assert.deepEqual(result.failed, ["bad-target"]);
-          assert.equal(yield* fs.readFileString(join(root, "src", "target.ts")), "original\n");
-          assert.equal(yield* fs.exists(join(kitchenInbox(root), "bad-target")), false);
-        }),
-      Layer.succeed(KitchenBuildPort, {
-        validate: (_root, patchId) =>
-          Effect.fail(
-            new KitchenApplyFailed({
-              patchId,
-              message: "validation failed",
+          const appliedDir = join(kitchenApplied(root), "heal-a");
+          yield* fs.makeDirectory(appliedDir, { recursive: true });
+          yield* fs.writeFileString(
+            join(appliedDir, MANIFEST_FILE),
+            JSON.stringify({
+              id: "heal-a",
+              issueKey: "CPD-1",
+              reason: "test",
+              files: [{ path: "src/x.ts", content: "x\n" }],
             }),
-          ),
-      }),
-    ));
+          );
 
-  it("rejects invalid manifest JSON in inbox", () =>
-    withKitchenRoot(({ root }) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const patchDir = join(kitchenInbox(root), "bad-json");
-        yield* fs.makeDirectory(patchDir, { recursive: true });
-        yield* fs.writeFileString(join(patchDir, MANIFEST_FILE), "{ not json");
-
-        const result = yield* processKitchenInbox().pipe(
-          Effect.match({
-            onFailure: (err) => err,
-            onSuccess: () => "unexpected-success",
-          }),
-        );
-        assert.match(String(result), /Invalid JSON/);
+          const status = yield* getHealStatus();
+          assert.equal(status.durable.length, 1);
+          assert.deepEqual(status.pendingContribution, ["heal-a"]);
+          assert.match(formatHealStatus(status), /heal-a/);
+        } finally {
+          if (prevState === undefined) delete process.env.ISSUE_DINNER_STATE_DIR;
+          else process.env.ISSUE_DINNER_STATE_DIR = prevState;
+        }
       }),
     ));
 });
 
 describe("contributeAppliedPatches", () => {
   it("opens a PR for an applied patch using the git port", () =>
-    withKitchenRoot(({ root }) =>
+    withHealRoot(({ root }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const appliedDir = join(kitchenApplied(root), "fix-target");
@@ -215,28 +175,23 @@ function mockGitPort(calls: string[]): KitchenGitCommands {
   };
 }
 
-function withKitchenRoot<A, E, R>(
+function withHealRoot<A, E, R>(
   run: (ctx: { root: string }) => Effect.Effect<A, E, R>,
-  extraLayer: Layer.Layer<never, never, KitchenBuildPort> = Layer.succeed(
-    KitchenBuildPort,
-    { validate: () => Effect.void },
-  ),
 ): Promise<A> {
   const prevRoot = process.env.ISSUE_DINNER_ROOT;
   return runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectory({ prefix: "issue-dinner-kitchen-" });
+      const root = yield* fs.makeTempDirectory({ prefix: "issue-dinner-heal-" });
       process.env.ISSUE_DINNER_ROOT = root;
       yield* fs.writeFileString(
         join(root, "package.json"),
         JSON.stringify({ name: "issue-dinner" }),
       );
       yield* fs.makeDirectory(join(root, "src"), { recursive: true });
-      yield* fs.makeDirectory(kitchenInbox(root), { recursive: true });
       yield* fs.makeDirectory(kitchenApplied(root), { recursive: true });
       return yield* run({ root });
-    }).pipe(Effect.provide(Layer.mergeAll(PlatformLive, extraLayer))),
+    }).pipe(Effect.provide(PlatformLive)),
   ).finally(() => {
     if (prevRoot === undefined) delete process.env.ISSUE_DINNER_ROOT;
     else process.env.ISSUE_DINNER_ROOT = prevRoot;

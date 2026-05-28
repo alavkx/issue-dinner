@@ -17,6 +17,8 @@ const config: MachineConfig = {
   blockerPolicy: "strict" as const,
   commitWip: true,
   recoveryAttempts: 2,
+  healAttempts: 3,
+  healTypecheckIterations: 8,
   quietRecovery: true,
   issueVerifyCommands: {
     "CPD-636": [

@@ -92,6 +92,42 @@ export function localAgentOptions(
   };
 }
 
+/** Course agent workspace roots — includes issue-dinner root when self-heal is on. */
+export function courseAgentOptions(
+  config: MachineConfig,
+  roots: IssueWorkspaces,
+  kitchenRoot?: string,
+): {
+  cwd: string | string[];
+  settingSources: Array<"project" | "user" | "team">;
+} {
+  if (!kitchenRoot) {
+    return localAgentOptions(config, roots.cwds);
+  }
+  const combined =
+    roots.cwds.length === 1
+      ? [kitchenRoot, roots.cwds[0]!]
+      : [kitchenRoot, ...roots.cwds];
+  return {
+    cwd: sdkCwd(combined),
+    settingSources: [...config.settingSources],
+  };
+}
+
+/** Dedicated heal agent — issue-dinner package root only. */
+export function healAgentOptions(
+  config: MachineConfig,
+  kitchenRoot: string,
+): {
+  cwd: string;
+  settingSources: Array<"project" | "user" | "team">;
+} {
+  return {
+    cwd: kitchenRoot,
+    settingSources: [...config.settingSources],
+  };
+}
+
 export function formatWorkspacesLabel(roots: IssueWorkspaces): string {
   if (roots.keys.length === 1) {
     return `${roots.keys[0]} (${roots.cwds[0]})`;
