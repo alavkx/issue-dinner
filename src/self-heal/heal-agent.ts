@@ -1,8 +1,6 @@
 import type { MachineConfig } from "../config.js";
 import { healAgentOptions } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
-import { CommandFailed } from "../effect/errors.js";
-import { runCommand } from "../util/exec.js";
 import {
   createOrResumeAgent,
   disposeAgent,
@@ -35,6 +33,7 @@ import {
   saveHealResume,
 } from "./heal-resume.js";
 import type { KitchenPatchManifest } from "./patch.js";
+import { runBuild, runTypecheck } from "./heal-validation.js";
 
 export interface HealSessionOptions {
   readonly issue: JiraIssue;
@@ -64,41 +63,6 @@ const slugifyPatchId = (issueKey: string, sessionId: string): string => {
   const tail = sessionId.split("-").pop() ?? "0";
   return `heal-${issueKey.toLowerCase()}-${tail}`;
 };
-
-const formatCommandFailure = (err: unknown): string => {
-  if (err instanceof CommandFailed) {
-    return [err.stderr, err.stdout, err.message].filter(Boolean).join("\n");
-  }
-  return err instanceof Error ? err.message : String(err);
-};
-
-const runTypecheck = (
-  root: string,
-): Effect.Effect<
-  { ok: true } | { ok: false; output: string },
-  import("@effect/platform/Error").PlatformError,
-  CommandExecutor.CommandExecutor
-> =>
-  runCommand("npm", ["run", "typecheck"], { cwd: root }).pipe(
-    Effect.map(() => ({ ok: true as const })),
-    Effect.catchAll((err) =>
-      Effect.succeed({ ok: false as const, output: formatCommandFailure(err) }),
-    ),
-  );
-
-const runBuild = (
-  root: string,
-): Effect.Effect<
-  { ok: true } | { ok: false; output: string },
-  import("@effect/platform/Error").PlatformError,
-  CommandExecutor.CommandExecutor
-> =>
-  runCommand("npm", ["run", "build"], { cwd: root }).pipe(
-    Effect.map(() => ({ ok: true as const })),
-    Effect.catchAll((err) =>
-      Effect.succeed({ ok: false as const, output: formatCommandFailure(err) }),
-    ),
-  );
 
 const runHealAgentTurn = (options: {
   apiKey: string;

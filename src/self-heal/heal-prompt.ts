@@ -29,6 +29,8 @@ export function buildHealPrompt(options: {
       "Handoff parsing failed; if issue-dinner mishandled the agent output, fix the CLI source.",
     commit:
       "Commit orchestration failed; if issue-dinner's git integration is wrong, fix the CLI source.",
+    inline:
+      "The course agent edited issue-dinner but inline validation failed — fix the CLI source.",
   };
 
   return `## Heal pass (${attempt}/${maxAttempts}) — issue-dinner self-heal
@@ -80,6 +82,42 @@ export function buildHealBuildPrompt(options: {
   return `## Heal — build feedback (${options.iteration}/${options.maxIterations})
 
 \`npm run build\` failed after typecheck passed. Fix issue-dinner \`src/**/*.ts\`.
+
+\`\`\`
+${options.errors.trim()}
+\`\`\`
+`;
+}
+
+export function buildInlineHealTypecheckPrompt(options: {
+  kitchenRoot: string;
+  errors: string;
+  iteration: number;
+  maxIterations: number;
+}): string {
+  return `## issue-dinner inline heal — typecheck feedback (${options.iteration}/${options.maxIterations})
+
+You edited issue-dinner source under \`${options.kitchenRoot}\`. Typecheck must pass before this course continues.
+
+Fix only \`src/**/*.ts\` under that root. Do not change project repos for this step.
+
+\`\`\`
+${options.errors.trim()}
+\`\`\`
+`;
+}
+
+export function buildInlineHealBuildPrompt(options: {
+  kitchenRoot: string;
+  errors: string;
+  iteration: number;
+  maxIterations: number;
+}): string {
+  return `## issue-dinner inline heal — build feedback (${options.iteration}/${options.maxIterations})
+
+Typecheck passed but \`npm run build\` failed for issue-dinner under \`${options.kitchenRoot}\`.
+
+Fix only \`src/**/*.ts\` under that root.
 
 \`\`\`
 ${options.errors.trim()}

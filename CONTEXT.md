@@ -38,11 +38,13 @@ _Avoid_: “patch manifest inbox” as a manual agent interface (removed; heal a
 
 **Heal agent**: Fixes issue-dinner source so orchestration can continue.
 
+**Inline heal**: The course agent edits issue-dinner `src/` during a course; the orchestrator detects those edits, validates via typecheck/build with the same agent, persists a **durable heal**, and restarts. Escalates to the **Heal agent** when inline validation fails.
+
 ## Relationships
 
 - A **Serve loop** processes many **Courses** from one **Epic**.
 - A **Course** is driven by a **Course agent** in project workspace(s).
-- When issue-dinner itself is broken, a **Heal agent** runs in the issue-dinner package root (direct `src/` edits).
+- When issue-dinner itself is broken, a **Heal agent** runs in the issue-dinner package root (direct `src/` edits), or the **Course agent** may **Inline heal** first.
 - A successful **Heal loop** produces a **Durable heal** and triggers **Heal resume** after restart.
 - At serve end, **Heal review** gates **Contribution** for approved **Durable heals**.
 

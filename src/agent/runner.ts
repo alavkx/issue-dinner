@@ -34,6 +34,8 @@ import {
   attemptSelfHealFromCourse,
   type ServeHealContext,
 } from "../self-heal/heal-agent.js";
+import { attemptInlineHealFromCourse } from "../self-heal/inline-heal.js";
+import { snapshotSrcFiles } from "../self-heal/durable-patches.js";
 import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
 import { drainRunStream } from "./stream-handler.js";
 import {
@@ -275,6 +277,11 @@ export const processIssue = (
       yield* appendTranscriptLine(transcript, `Course start: ${issue.summary}`);
     }
 
+    const kitchenBaseline =
+      options.selfHeal && options.kitchenRoot
+        ? yield* snapshotSrcFiles(options.kitchenRoot)
+        : undefined;
+
     const maybeHeal = (
       trigger: import("../self-heal/heal-resume.js").HealTriggerKind,
       detail: string,
@@ -292,6 +299,48 @@ export const processIssue = (
         detail,
         verifyOutput,
         courseAgentId,
+      });
+
+    const maybeInlineHeal = (
+      courseAgentId?: string,
+      failureDetail?: string,
+    ) =>
+      attemptInlineHealFromCourse({
+        issue,
+        config,
+        apiKey,
+        selfHeal: options.selfHeal,
+        kitchenRoot: options.kitchenRoot,
+        roots,
+        serveHeal: options.serveHeal,
+        baseline: kitchenBaseline,
+        courseAgentId,
+        failureDetail,
+      });
+
+    const tryInlineThenDedicatedHeal = (
+      trigger: import("../self-heal/heal-resume.js").HealTriggerKind,
+      detail: string,
+      verifyOutput?: string,
+      courseAgentId?: string,
+    ) =>
+      Effect.gen(function* () {
+        const inline = yield* maybeInlineHeal(courseAgentId, detail);
+        if (inline?.outcome === "no_changes" || inline === undefined) {
+          yield* maybeHeal(trigger, detail, verifyOutput, courseAgentId);
+          return;
+        }
+        if (
+          inline.outcome === "declined" ||
+          inline.outcome === "exhausted"
+        ) {
+          yield* maybeHeal(
+            trigger,
+            inline.error ?? detail,
+            verifyOutput,
+            courseAgentId,
+          );
+        }
       });
 
     let branches: Record<string, string> = {};
@@ -312,7 +361,7 @@ export const processIssue = (
           transcriptPath: transcript?.path,
         });
         out.error(`${issue.key}: ${msg}`);
-        yield* maybeHeal("orchestration", msg);
+        yield* tryInlineThenDedicatedHeal("orchestration", msg);
         return { issueKey: issue.key, status: "error", error: msg };
       }
 
@@ -348,7 +397,7 @@ export const processIssue = (
           transcriptPath: transcript?.path,
         });
         out.error(`${issue.key}: stack prep failed — ${message}`);
-        yield* maybeHeal("recovery_exhausted", message);
+        yield* tryInlineThenDedicatedHeal("recovery_exhausted", message);
         return { issueKey: issue.key, status: "error", error: message };
       }
 
@@ -483,7 +532,7 @@ export const processIssue = (
               resultPreview: msg.slice(0, 500),
               transcriptPath: transcript?.path,
             });
-            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
+            yield* tryInlineThenDedicatedHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -531,7 +580,7 @@ export const processIssue = (
               resultPreview: msg.slice(0, 500),
               transcriptPath: transcript?.path,
             });
-            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
+            yield* tryInlineThenDedicatedHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -577,7 +626,7 @@ export const processIssue = (
               error: msg,
               resultPreview: msg.slice(0, 500),
             });
-            yield* maybeHeal("agent_error", msg, undefined, agent.agentId);
+            yield* tryInlineThenDedicatedHeal("agent_error", msg, undefined, agent.agentId);
             return {
               issueKey: issue.key,
               status: "error" as const,
@@ -608,6 +657,38 @@ export const processIssue = (
         }
 
         let text = result.result ?? "";
+
+        const inlineAfterAgent = yield* maybeInlineHeal(agent.agentId);
+        if (
+          inlineAfterAgent?.outcome === "declined" ||
+          inlineAfterAgent?.outcome === "exhausted"
+        ) {
+          const inlineMsg =
+            inlineAfterAgent.error ?? "inline heal failed after course agent edits";
+          yield* store.appendResolutionStep(issue.key, inlineMsg);
+          yield* maybeHeal("inline", inlineMsg, undefined, agent.agentId);
+          yield* store.upsert({
+            issueKey: issue.key,
+            summary: issue.summary,
+            status: "error",
+            ...ws,
+            branches,
+            agentId: agent.agentId,
+            runId: result.id,
+            finishedAt: new Date().toISOString(),
+            error: inlineMsg,
+            resultPreview: text.slice(0, 500),
+            transcriptPath: transcript?.path,
+          });
+          return {
+            issueKey: issue.key,
+            status: "error" as const,
+            agentId: agent.agentId,
+            runId: result.id,
+            error: inlineMsg,
+          };
+        }
+
         let handoff = parseHandoff(text);
 
         if (!agentPhaseSucceeded(handoff)) {
@@ -836,7 +917,7 @@ export const processIssue = (
             transcriptPath: transcript?.path,
           });
           out.error(`${issue.key} verify failed: ${verify.error}`);
-          yield* maybeHeal(
+          yield* tryInlineThenDedicatedHeal(
             "verify",
             verify.error ?? "verify failed",
             verify.output,
@@ -904,7 +985,7 @@ export const processIssue = (
           });
 
           out.error(`${issue.key}: ${message}`);
-          yield* maybeHeal("orchestration", message);
+          yield* tryInlineThenDedicatedHeal("orchestration", message);
           return { issueKey: issue.key, status: "error" as const, error: message };
         }),
       ),

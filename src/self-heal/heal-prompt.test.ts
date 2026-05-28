@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   agentDeclinedHeal,
+  buildHealPrompt,
   buildHealTypecheckPrompt,
   buildPostHealCourseResumePrompt,
   HEAL_DECLINE_MARKER,
@@ -21,6 +22,24 @@ describe("heal-prompt", () => {
     });
     assert.match(prompt, /typecheck feedback \(2\/8\)/);
     assert.match(prompt, /TS1005/);
+  });
+
+  it("includes inline trigger in dedicated heal prompt", () => {
+    const prompt = buildHealPrompt({
+      issue: {
+        key: "CPD-636",
+        summary: "Replay events",
+        status: "Open",
+        description: "",
+        parsed: { acceptanceCriteria: [], blockedBy: [] },
+      },
+      kitchenRoot: "/tmp/issue-dinner",
+      trigger: "inline",
+      detail: "typecheck failed",
+      attempt: 1,
+      maxAttempts: 3,
+    });
+    assert.match(prompt, /inline validation failed/i);
   });
 
   it("builds post-heal course resume prompt without old errors", () => {

@@ -11,7 +11,8 @@ export type HealTriggerKind =
   | "verify"
   | "recovery_exhausted"
   | "handoff"
-  | "commit";
+  | "commit"
+  | "inline";
 
 export interface HealResumeState {
   readonly version: 1;
