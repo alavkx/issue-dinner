@@ -1,5 +1,5 @@
 import { CursorAgentError } from "@cursor/sdk";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
   formatWorkspacesLabel,
@@ -98,7 +98,7 @@ const recordBranches = (
 
 export const runVerifyPhase = (
   issue: JiraIssue,
-  config: DinnerConfig,
+  config: MachineConfig,
   roots: IssueWorkspaces,
   options: { gate?: "inner" | "full" } = {},
 ): Effect.Effect<
@@ -161,7 +161,7 @@ export const runVerifyPhase = (
 
 export const verifyIssue = (
   issue: JiraIssue,
-  config: DinnerConfig,
+  config: MachineConfig,
 ): Effect.Effect<
   ProcessResult,
   unknown,
@@ -225,7 +225,7 @@ export const verifyIssue = (
 
 export const processIssue = (
   issue: JiraIssue,
-  config: DinnerConfig,
+  config: MachineConfig,
   apiKey: string,
   options: ProcessOptions = {},
 ): Effect.Effect<
@@ -885,7 +885,7 @@ const logCommitResults = (results: CommitResult[]): Effect.Effect<void> =>
 
 const commitCourseWithRecovery = (options: {
   issue: JiraIssue;
-  config: DinnerConfig;
+  config: MachineConfig;
   roots: IssueWorkspaces;
   apiKey: string;
   transcript?: Transcript;

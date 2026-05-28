@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import {
   localAgentOptions,
   resolveIssueWorkspaces,
   sdkCwd,
 } from "./workspaces.js";
 
-const base: DinnerConfig = {
+const base: MachineConfig = {
   model: "composer-2.5",
   workspaces: {
     backend: "/tmp/fileservice2",
@@ -29,7 +29,7 @@ const base: DinnerConfig = {
 
 describe("resolveIssueWorkspaces", () => {
   it("uses issueWorkspaces when configured", () => {
-    const config: DinnerConfig = {
+    const config: MachineConfig = {
       ...base,
       issueWorkspaces: {
         "CPD-636": ["backend", "schemas", "sdk", "frontend"],
@@ -52,7 +52,7 @@ describe("resolveIssueWorkspaces", () => {
   });
 
   it("falls back to a single workspace from issueWorkspace", () => {
-    const config: DinnerConfig = {
+    const config: MachineConfig = {
       ...base,
       issueWorkspace: { "CPD-639": "frontend" },
     };

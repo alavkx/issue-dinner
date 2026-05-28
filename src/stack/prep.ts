@@ -1,4 +1,4 @@
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { resolveCwd, resolveIssueWorkspaces } from "../config/workspaces.js";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import * as Effect from "effect/Effect";
@@ -67,7 +67,7 @@ const ensureStackBase = (
 
 export const prepEpicStack = (
   issues: JiraIssue[],
-  config: DinnerConfig,
+  config: MachineConfig,
   stack: StackConfig,
   port: GraphiteStackPort,
 ): Effect.Effect<
@@ -100,7 +100,7 @@ export const prepEpicStack = (
 
 function stepForIssue(
   issue: JiraIssue,
-  config: DinnerConfig,
+  config: MachineConfig,
   stack: StackConfig,
   workspaceKey: string,
 ): RepoStackStep | undefined {
@@ -116,7 +116,7 @@ function stepForIssue(
 
 export const checkoutIssueStack = (
   issue: JiraIssue,
-  config: DinnerConfig,
+  config: MachineConfig,
   stack: StackConfig,
   port: GraphiteStackPort,
 ): Effect.Effect<

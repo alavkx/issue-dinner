@@ -1,4 +1,4 @@
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
   localAgentOptions,
@@ -56,7 +56,7 @@ const recordStep = (
 
 export const runRecoveryAgent = (options: {
   issue: JiraIssue;
-  config: DinnerConfig;
+  config: MachineConfig;
   roots: IssueWorkspaces;
   apiKey: string;
   kind: RecoveryKind;
@@ -209,7 +209,7 @@ export const runRecoveryAgent = (options: {
 
 const tryProgrammaticStackRecovery = (options: {
   issue: JiraIssue;
-  config: DinnerConfig;
+  config: MachineConfig;
   transcript?: Transcript;
 }): Effect.Effect<
   boolean,
@@ -247,7 +247,7 @@ const tryProgrammaticStackRecovery = (options: {
 
 export const checkoutWithRecovery = (options: {
   issue: JiraIssue;
-  config: DinnerConfig;
+  config: MachineConfig;
   stack: StackConfig;
   apiKey: string;
   transcript?: Transcript;

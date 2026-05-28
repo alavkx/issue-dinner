@@ -1,4 +1,4 @@
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { IssueWorkspaces } from "../config/workspaces.js";
 import type { JiraIssue } from "../jira/acli.js";
 import { formatVerifyCommandsForPrompt } from "../verify/format.js";
@@ -7,7 +7,7 @@ import type { ResolvedVerifyCommand } from "../verify/resolve.js";
 export interface PromptContext {
   issue: JiraIssue;
   roots: IssueWorkspaces;
-  config: DinnerConfig;
+  config: MachineConfig;
   verifyCommands: ResolvedVerifyCommand[];
 }
 

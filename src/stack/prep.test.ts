@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { JiraIssue } from "../jira/acli.js";
 import { runEffect } from "../effect/test-runtime.js";
 import type { GraphiteStackPort } from "./graphite-port.js";
 import { checkoutIssueStack, prepEpicStack } from "./prep.js";
 
-const config: DinnerConfig = {
+const config: MachineConfig = {
   model: "composer-2.5",
   workspaces: { backend: "/tmp/backend" },
   defaultWorkspace: "backend",
@@ -100,7 +100,7 @@ describe("checkoutIssueStack", () => {
     runEffect(
       Effect.gen(function* () {
         const port = recordingPort();
-        const multiConfig: DinnerConfig = {
+        const multiConfig: MachineConfig = {
           ...config,
           issueWorkspaces: { "CPD-636": ["backend", "frontend"] },
           workspaces: {

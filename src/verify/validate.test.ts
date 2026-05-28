@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { runEffect } from "../effect/test-runtime.js";
 import { validateVerifyCommands } from "./validate.js";
 
-const config: DinnerConfig = {
+const config: MachineConfig = {
   model: "composer-2.5",
   workspaces: { backend: "/tmp/nope" },
   defaultWorkspace: "backend",

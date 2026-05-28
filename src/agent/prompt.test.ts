@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { buildAgentPrompt } from "./prompt.js";
 
-const config: DinnerConfig = {
+const config: MachineConfig = {
   model: "composer-2.5",
   workspaces: { backend: "/tmp/fileservice2" },
   defaultWorkspace: "backend",

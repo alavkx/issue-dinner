@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import type { JiraIssue } from "../jira/acli.js";
 import { buildRepoStackPlan } from "./plan.js";
 
-const baseConfig: DinnerConfig = {
+const baseConfig: MachineConfig = {
   model: "composer-2.5",
   workspaces: {
     backend: "/tmp/backend",
@@ -75,7 +75,7 @@ describe("buildRepoStackPlan", () => {
   });
 
   it("omits issues that do not touch the workspace", () => {
-    const splitConfig: DinnerConfig = {
+    const splitConfig: MachineConfig = {
       ...baseConfig,
       issueWorkspaces: { "CPD-636": ["frontend"] },
     };

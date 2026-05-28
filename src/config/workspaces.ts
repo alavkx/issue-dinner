@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 
 export interface IssueWorkspaces {
   primaryKey: string;
@@ -8,7 +8,7 @@ export interface IssueWorkspaces {
 }
 
 export function resolveWorkspaceKey(
-  config: DinnerConfig,
+  config: MachineConfig,
   issueKey: string,
   description: string,
   summary: string,
@@ -37,7 +37,7 @@ export function resolveWorkspaceKey(
   return config.defaultWorkspace;
 }
 
-export function resolveCwd(config: DinnerConfig, workspaceKey: string): string {
+export function resolveCwd(config: MachineConfig, workspaceKey: string): string {
   const cwd = config.workspaces[workspaceKey];
   if (!cwd) {
     throw new Error(
@@ -48,7 +48,7 @@ export function resolveCwd(config: DinnerConfig, workspaceKey: string): string {
 }
 
 export function resolveIssueWorkspaces(
-  config: DinnerConfig,
+  config: MachineConfig,
   issueKey: string,
   description: string,
   summary: string,
@@ -80,7 +80,7 @@ export function sdkCwd(cwds: string[]): string | string[] {
 }
 
 export function localAgentOptions(
-  config: DinnerConfig,
+  config: MachineConfig,
   cwds: string[],
 ): {
   cwd: string | string[];

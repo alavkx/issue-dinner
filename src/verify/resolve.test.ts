@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import * as Effect from "effect/Effect";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { runEffect } from "../effect/test-runtime.js";
 import { resolveVerifyCommandsForIssue } from "./resolve.js";
 import { effectiveVerifyTier } from "./tier.js";
 
-const base: DinnerConfig = {
+const base: MachineConfig = {
   model: "composer-2.5",
   workspaces: { backend: "/tmp/be", frontend: "/tmp/fe" },
   defaultWorkspace: "backend",
@@ -25,7 +25,7 @@ const base: DinnerConfig = {
   quietRecovery: true,
 };
 
-describe("resolveVerifyCommands", () => {
+describe("resolveVerifyCommandsForIssue", () => {
   it("prefers per-issue commands over workspace defaults", () =>
     runEffect(
       resolveVerifyCommandsForIssue(configWithIssueOverride(), "CPD-636", [
@@ -63,7 +63,7 @@ describe("resolveVerifyCommands", () => {
     writeFileSync(join(unitDir, "test_notification_service.py"), "");
     writeFileSync(join(intDir, "test_notification_routes.py"), "");
 
-    const config: DinnerConfig = {
+    const config: MachineConfig = {
       ...base,
       workspaces: { backend: cwd },
       issueVerifyCommands: {
@@ -99,7 +99,7 @@ describe("resolveVerifyCommands", () => {
   });
 });
 
-function configWithIssueOverride(): DinnerConfig {
+function configWithIssueOverride(): MachineConfig {
   return {
     ...base,
     verifyCommands: {
@@ -111,7 +111,7 @@ function configWithIssueOverride(): DinnerConfig {
   };
 }
 
-function configWithWorkspaceDefaults(): DinnerConfig {
+function configWithWorkspaceDefaults(): MachineConfig {
   return {
     ...base,
     verifyCommands: {

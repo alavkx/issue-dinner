@@ -1,4 +1,4 @@
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { resolveCwd } from "../config/workspaces.js";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "@effect/platform/FileSystem";
@@ -13,7 +13,7 @@ export type ResolvedVerifyCommand = VerifyCommand & { cwd: string };
 type PlatformError = import("@effect/platform/Error").PlatformError;
 
 export const resolveVerifyCommandsForIssue = (
-  config: DinnerConfig,
+  config: MachineConfig,
   issueKey: string,
   workspaceKeys: string[],
 ): Effect.Effect<
@@ -50,14 +50,3 @@ export const resolveVerifyCommandsForIssue = (
     }
     return resolved;
   });
-
-/** @deprecated use resolveVerifyCommandsForIssue */
-export const resolveVerifyCommands = (
-  config: DinnerConfig,
-  issueKey: string,
-  workspaceKey: string,
-): Effect.Effect<
-  ResolvedVerifyCommand[],
-  PlatformError,
-  FileSystem.FileSystem
-> => resolveVerifyCommandsForIssue(config, issueKey, [workspaceKey]);

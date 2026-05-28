@@ -1,6 +1,6 @@
 import * as FileSystem from "@effect/platform/FileSystem";
 import * as Effect from "effect/Effect";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { resolveIssueWorkspaces } from "../config/workspaces.js";
 import { cursorApiKeyEnvName } from "../env.js";
 import { recoverDirtyWorkspace } from "../git/recover-workspace.js";
@@ -42,7 +42,7 @@ function push(
 const recoveryIssueForWorkspace = (
   workspaceKey: string,
   menuIssues: JiraIssue[],
-  config: DinnerConfig,
+  config: MachineConfig,
 ): Effect.Effect<JiraIssue | undefined, never, StateStore> =>
   Effect.gen(function* () {
     const store = yield* StateStore;
@@ -89,7 +89,7 @@ const shouldSkipVerifyPathsForIssue = (
   });
 
 export const runPreflight = (options: {
-  config: DinnerConfig;
+  config: MachineConfig;
   stack: StackConfig;
   menuIssues: JiraIssue[];
   requireApiKey?: boolean;

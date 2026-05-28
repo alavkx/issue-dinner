@@ -2,7 +2,7 @@ import { join } from "node:path";
 import * as FileSystem from "@effect/platform/FileSystem";
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import * as Effect from "effect/Effect";
-import type { DinnerConfig, ServeVerifyGate } from "../config.js";
+import type { MachineConfig, ServeVerifyGate } from "../config.js";
 import { commandExists } from "../util/exec.js";
 import { resolveVerifyCommandsForIssue } from "./resolve.js";
 import { filterVerifyCommandsForServe } from "./runner.js";
@@ -27,7 +27,7 @@ function pathArgsFromCommand(args: ReadonlyArray<string>): string[] {
 }
 
 export const validateVerifyCommands = (
-  config: DinnerConfig,
+  config: MachineConfig,
   issueKey: string,
   workspaceKeys: string[],
   options: { gate?: ServeVerifyGate } = {},

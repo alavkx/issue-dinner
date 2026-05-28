@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as FileSystem from "@effect/platform/FileSystem";
@@ -49,10 +48,3 @@ export const resolveCliExecutable = (): Effect.Effect<
     const fs = yield* FileSystem.FileSystem;
     return (yield* fs.exists(entry)) ? resolve(entry) : "issue-dinner";
   });
-
-/** @deprecated Use resolveCliExecutable Effect program. */
-export function resolveCliExecutableSync(): string {
-  const entry = process.argv[1];
-  if (!entry) return "issue-dinner";
-  return existsSync(entry) ? resolve(entry) : "issue-dinner";
-}

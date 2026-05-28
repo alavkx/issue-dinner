@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as FileSystem from "@effect/platform/FileSystem";
@@ -69,9 +68,6 @@ export const MachineConfigSchema = Schema.Struct({
 
 export type MachineConfig = typeof MachineConfigSchema.Type;
 
-/** @deprecated Use MachineConfig */
-export type DinnerConfig = MachineConfig;
-
 const CONFIG_NAMES = [
   join(homedir(), ".config", "issue-dinner", "config.json"),
   "issue-dinner.config.json",
@@ -94,17 +90,6 @@ export const findConfigPath = (
     if (yield* fs.exists(example)) return example;
     return undefined;
   });
-
-/** @deprecated Use findConfigPath Effect program. */
-export function findConfigPathSync(explicit?: string): string | undefined {
-  if (explicit) return resolve(explicit);
-  for (const name of CONFIG_NAMES) {
-    if (existsSync(name)) return resolve(name);
-  }
-  const example = resolve("config.example.json");
-  if (existsSync(example)) return example;
-  return undefined;
-}
 
 export const loadMachineConfig = (
   explicit?: string,

@@ -1,7 +1,7 @@
 import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import { CommandFailed } from "../effect/errors.js";
 import * as Effect from "effect/Effect";
-import type { DinnerConfig } from "../config.js";
+import type { MachineConfig } from "../config.js";
 import { resolveIssueWorkspaces } from "../config/workspaces.js";
 import { recoverDirtyWorkspaces } from "../git/recover-workspace.js";
 import { gitIsDirty } from "../git/workspace.js";
@@ -15,7 +15,7 @@ export interface WorkspaceCleanResult {
 
 /** Commit or stash dirty repos for this issue's workspaces so stack prep can run. */
 export const ensureWorkspacesCleanForIssue = (
-  config: DinnerConfig,
+  config: MachineConfig,
   issue: JiraIssue,
   options: { label?: string } = {},
 ): Effect.Effect<
