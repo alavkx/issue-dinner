@@ -82,7 +82,20 @@ function loadState(
     Effect.flatMap((exists) => {
       if (!exists) return Effect.succeed(structuredClone(DEFAULT_STATE));
       return fs.readFileString(path).pipe(
-        Effect.map((raw) => JSON.parse(raw) as DinnerState),
+        Effect.flatMap((raw) => {
+          const trimmed = raw.trim();
+          if (!trimmed) {
+            return Effect.succeed(structuredClone(DEFAULT_STATE));
+          }
+          return Effect.try({
+            try: () => JSON.parse(trimmed) as DinnerState,
+            catch: () => new SyntaxError("invalid runs.json"),
+          }).pipe(
+            Effect.catchAll(() =>
+              Effect.succeed(structuredClone(DEFAULT_STATE)),
+            ),
+          );
+        }),
         Effect.catchAll(() => Effect.succeed(structuredClone(DEFAULT_STATE))),
       );
     }),
@@ -95,9 +108,12 @@ function saveState(
   path: string,
   data: DinnerState,
 ): Effect.Effect<void> {
-  return fs
-    .writeFileString(path, JSON.stringify(data, null, 2))
-    .pipe(Effect.catchAll(() => Effect.void));
+  const body = JSON.stringify(data, null, 2);
+  const tmpPath = `${path}.tmp`;
+  return fs.writeFileString(tmpPath, body).pipe(
+    Effect.flatMap(() => fs.rename(tmpPath, path)),
+    Effect.catchAll(() => Effect.void),
+  );
 }
 
 export const makeStateStore = (

@@ -15,6 +15,7 @@ import {
 import { buildLaunchShellCommand, launchInTmux } from "../launch/tmux.js";
 import { findConfigPath } from "../config.js";
 import { ensureAcli, fetchIssue, listEpicChildren } from "../jira/acli.js";
+import { PlatformLive } from "../effect/layers.js";
 import {
   resolveCliExecutable,
   stateStoreLayerForEpic,
@@ -295,27 +296,42 @@ const runMealWithStore = (
           yield* printDryRunMenuPlan(meal, issues);
         }
 
-        const recoverStale = (): ReadonlyArray<string> => {
-          const keys = Effect.runSync(store.recoverStaleRunning());
-          if (keys.length > 0) {
-            console.log(`Recovered stale running: ${keys.join(", ")}\n`);
-          }
-          return keys;
+        const recoverStaleEffect = store.recoverStaleRunning().pipe(
+          Effect.tap((keys) =>
+            Effect.sync(() => {
+              if (keys.length > 0) {
+                console.log(`Recovered stale running: ${keys.join(", ")}\n`);
+              }
+            }),
+          ),
+        );
+
+        const recoverStaleOutsideFiber = (): void => {
+          void Effect.runPromise(
+            recoverStaleEffect.pipe(
+              Effect.provide(stateStoreLayerForEpic(meal.epic)),
+              Effect.provide(PlatformLive),
+            ),
+          );
         };
 
-        recoverStale();
+        yield* recoverStaleEffect;
 
-        setServeShutdownHandler(() => {
-          recoverStale();
-        });
+        setServeShutdownHandler(recoverStaleOutsideFiber);
 
         let sigintHandler: (() => void) | undefined;
         if (!dryRun) {
           sigintHandler = () => {
             out.warn("Interrupted — marking in-flight courses and exiting");
-            recoverStale();
-            process.exitCode = 130;
-            process.exit(130);
+            void Effect.runPromise(
+              recoverStaleEffect.pipe(
+                Effect.provide(stateStoreLayerForEpic(meal.epic)),
+                Effect.provide(PlatformLive),
+              ),
+            ).finally(() => {
+              process.exitCode = 130;
+              process.exit(130);
+            });
           };
           process.once("SIGINT", sigintHandler);
         }
@@ -546,7 +562,7 @@ const runMealWithStore = (
           }
           setServeShutdownHandler(undefined);
           if (!dryRun) {
-            recoverStale();
+            yield* recoverStaleEffect;
             if (selfHeal && kitchenRoot) {
               const pending = yield* listPendingContributions(kitchenRoot);
               const reminder = formatContributeReminder(pending);

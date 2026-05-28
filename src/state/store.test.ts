@@ -72,4 +72,17 @@ describe("StateStore.isDone", () => {
       assert.deepEqual(recovered, ["CPD-636"]);
       assert.equal((yield* store.get("CPD-636"))?.status, "error");
     })));
+
+  it("treats empty runs.json as default state", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectory({ prefix: "issue-dinner-" });
+        yield* fs.writeFileString(`${dir}/runs.json`, "");
+        return yield* Effect.gen(function* () {
+          const store = yield* StateStore;
+          assert.equal((yield* store.get("CPD-636")), undefined);
+        }).pipe(Effect.provide(stateStoreLayer(dir)));
+      }),
+    ));
 });
