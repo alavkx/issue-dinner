@@ -1,4 +1,4 @@
-import { Agent, CursorAgentError } from "@cursor/sdk";
+import { CursorAgentError } from "@cursor/sdk";
 import type { DinnerConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
@@ -31,9 +31,14 @@ import { buildAgentPrompt } from "./prompt.js";
 import { checkoutWithRecovery, runRecoveryAgent } from "./recovery.js";
 import { drainRunStream } from "./stream-handler.js";
 import {
+  createOrResumeAgent,
+  sendPrompt,
+  waitForRun,
+  withAgent,
+} from "./lifecycle.js";
+import {
   formatAgentError,
   isSdkCanceledError,
-  safeDisposeAgent,
 } from "./sdk-errors.js";
 import { ensureWorkspacesCleanForIssue } from "../serve/workspace-gate.js";
 import { Transcript } from "../serve/transcript.js";
@@ -325,28 +330,18 @@ export const processIssue = (
     out.phase("agent", `local cwd=${JSON.stringify(local.cwd)}`);
     transcript?.appendLine(`agent local cwd=${JSON.stringify(local.cwd)}`);
 
-    const agentResult = yield* Effect.gen(function* () {
-      const agent = yield* Effect.tryPromise({
-        try: () =>
-          options.resumeAgentId
-            ? Agent.resume(options.resumeAgentId, {
-                apiKey,
-                model: { id: config.model },
-                local,
-              })
-            : Agent.create({
-                apiKey,
-                model: { id: config.model },
-                local,
-              }),
-        catch: (err) => err,
-      });
-
-      return yield* Effect.gen(function* () {
-        const run = yield* Effect.tryPromise({
-          try: () => agent.send(prompt),
-          catch: (err) => err,
-        });
+    const agentResult = yield* withAgent(
+      createOrResumeAgent({
+        resumeAgentId: options.resumeAgentId,
+        create: {
+          apiKey,
+          model: { id: config.model },
+          local,
+        },
+      }),
+      (agent) =>
+        Effect.gen(function* () {
+        const run = yield* sendPrompt(agent, prompt);
         out.phase("stream", `agentId=${agent.agentId} runId=${run.id}`);
         transcript?.appendLine(`agentId=${agent.agentId} runId=${run.id}`);
 
@@ -362,15 +357,7 @@ export const processIssue = (
         }
 
         let result;
-        const waitOutcome = yield* Effect.tryPromise({
-          try: () => run.wait(),
-          catch: (err) => err,
-        }).pipe(
-          Effect.match({
-            onFailure: (waitErr) => ({ ok: false as const, err: waitErr }),
-            onSuccess: (value) => ({ ok: true as const, value }),
-          }),
-        );
+        const waitOutcome = yield* waitForRun(run);
 
         if (!waitOutcome.ok) {
           streamCanceled = true;
@@ -792,15 +779,8 @@ export const processIssue = (
           runId: result.id,
           result: text,
         };
-      }).pipe(
-        Effect.ensuring(
-          Effect.tryPromise({
-            try: () => safeDisposeAgent(agent),
-            catch: () => undefined,
-          }).pipe(Effect.ignore),
-        ),
-      );
-    }).pipe(
+      }),
+    ).pipe(
       Effect.catchAll((err) =>
         Effect.gen(function* () {
           const message = isSdkCanceledError(err)

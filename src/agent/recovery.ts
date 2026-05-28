@@ -1,4 +1,3 @@
-import { Agent } from "@cursor/sdk";
 import type { DinnerConfig } from "../config.js";
 import type { StackConfig } from "../stack/stack-config.js";
 import {
@@ -14,7 +13,13 @@ import { createGraphiteStackPort } from "../stack/graphite-runner.js";
 import type { StackActionSummary } from "../stack/prep.js";
 import * as out from "../ui/out.js";
 import { drainRunStream } from "./stream-handler.js";
-import { formatAgentError, isSdkCanceledError, safeDisposeAgent } from "./sdk-errors.js";
+import { formatAgentError, isSdkCanceledError } from "./sdk-errors.js";
+import {
+  createOrResumeAgent,
+  disposeAgent,
+  sendPrompt,
+  waitForRun,
+} from "./lifecycle.js";
 import {
   agentPhaseSucceeded,
   parseHandoff,
@@ -85,27 +90,18 @@ export const runRecoveryAgent = (options: {
       });
 
       const attemptResult = yield* Effect.gen(function* () {
-        const agent = yield* Effect.tryPromise({
-          try: () =>
-            attempt === 1 && options.resumeAgentId
-              ? Agent.resume(options.resumeAgentId, {
-                  apiKey: options.apiKey,
-                  model: { id: options.config.model },
-                  local,
-                })
-              : Agent.create({
-                  apiKey: options.apiKey,
-                  model: { id: options.config.model },
-                  local,
-                }),
-          catch: (err) => err,
+        const agent = yield* createOrResumeAgent({
+          resumeAgentId:
+            attempt === 1 ? options.resumeAgentId : undefined,
+          create: {
+            apiKey: options.apiKey,
+            model: { id: options.config.model },
+            local,
+          },
         });
 
         return yield* Effect.gen(function* () {
-          const run = yield* Effect.tryPromise({
-            try: () => agent.send(prompt),
-            catch: (err) => err,
-          });
+          const run = yield* sendPrompt(agent, prompt);
           out.phase("recovery stream", `${options.issue.key} agent=${agent.agentId}`);
 
           const sink = {
@@ -119,22 +115,19 @@ export const runRecoveryAgent = (options: {
           };
           const drain = yield* drainRunStream(run.stream(), sink);
 
-          const waitResult = yield* Effect.tryPromise({
-            try: () => run.wait(),
-            catch: (err) => err,
-          }).pipe(
-            Effect.catchAll((waitErr) =>
-              Effect.gen(function* () {
-                const msg = formatAgentError(waitErr);
-                yield* recordStep(
-                  options.issue.key,
-                  `Recovery run error: ${msg.slice(0, 200)}`,
-                  options.transcript,
-                );
-                return null;
-              }),
-            ),
-          );
+          let waitResult;
+          const waitOutcome = yield* waitForRun(run);
+          if (!waitOutcome.ok) {
+            const msg = formatAgentError(waitOutcome.err);
+            yield* recordStep(
+              options.issue.key,
+              `Recovery run error: ${msg.slice(0, 200)}`,
+              options.transcript,
+            );
+            waitResult = null;
+          } else {
+            waitResult = waitOutcome.value;
+          }
 
           if (waitResult === null) {
             return null;
@@ -184,14 +177,7 @@ export const runRecoveryAgent = (options: {
             runId: result.id,
             resultText: text,
           } satisfies RecoveryResult;
-        }).pipe(
-          Effect.ensuring(
-            Effect.tryPromise({
-              try: () => safeDisposeAgent(agent),
-              catch: () => undefined,
-            }).pipe(Effect.ignore),
-          ),
-        );
+        }).pipe(Effect.ensuring(disposeAgent(agent)));
       }).pipe(
         Effect.catchAll((err) =>
           Effect.gen(function* () {
