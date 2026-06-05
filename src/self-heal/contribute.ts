@@ -1,0 +1,476 @@
+import { dirname, join } from "node:path";
+import * as FileSystem from "@effect/platform/FileSystem";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { runCommand } from "../util/exec.js";
+import { resolveProjectRoot } from "../runtime/project-root.js";
+import * as out from "../ui/out.js";
+import {
+  CONTRIBUTION_FILE,
+  HealContributionRecord,
+  HealPatchInvalid,
+  HealPatchManifest,
+  MANIFEST_FILE,
+  healAppliedDir,
+  validatePatchPath,
+} from "./patch.js";
+
+export const CONTRIBUTE_BASE_ENV = "ISSUE_DINNER_CONTRIBUTE_BASE";
+export const CONTRIBUTE_REMOTE_ENV = "ISSUE_DINNER_CONTRIBUTE_REMOTE";
+
+export interface ContributeOptions {
+  readonly dryRun?: boolean;
+  readonly baseBranch?: string;
+  readonly remote?: string;
+  readonly patchId?: string;
+  /** Package root with `.issue-dinner/heals/applied`; defaults to resolveProjectRoot(). */
+  readonly root?: string;
+}
+
+export interface ContributeResult {
+  readonly contributed: ReadonlyArray<string>;
+  readonly skipped: ReadonlyArray<string>;
+  readonly failed: ReadonlyArray<{ patchId: string; error: string }>;
+}
+
+export interface CreatePullRequestInput {
+  readonly root: string;
+  readonly baseBranch: string;
+  readonly branch: string;
+  readonly title: string;
+  readonly body: string;
+  readonly remote: string;
+}
+
+export interface SelfHealGitCommands {
+  readonly readBranch: (
+    root: string,
+  ) => Effect.Effect<
+    string,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly checkout: (
+    root: string,
+    ref: string,
+  ) => Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly createBranch: (
+    root: string,
+    branch: string,
+  ) => Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly add: (
+    root: string,
+    paths: ReadonlyArray<string>,
+  ) => Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly commit: (
+    root: string,
+    message: string,
+  ) => Effect.Effect<
+    string,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly push: (
+    root: string,
+    remote: string,
+    branch: string,
+  ) => Effect.Effect<
+    void,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+  readonly createPullRequest: (
+    input: CreatePullRequestInput,
+  ) => Effect.Effect<
+    string,
+    import("@effect/platform/Error").PlatformError | import("../effect/errors.js").CommandFailed,
+    CommandExecutor.CommandExecutor
+  >;
+}
+
+export class SelfHealGitPort extends Context.Tag("issue-dinner/SelfHealGitPort")<
+  SelfHealGitPort,
+  SelfHealGitCommands
+>() {}
+
+export class SelfHealContributeFailed extends Schema.TaggedError<SelfHealContributeFailed>()(
+  "SelfHealContributeFailed",
+  {
+    patchId: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+const slugify = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "patch";
+
+export const contributionBranchName = (patchId: string): string =>
+  `self-heal/${slugify(patchId)}`;
+
+export const contributionCommitMessage = (
+  manifest: Pick<HealPatchManifest, "id" | "issueKey" | "reason">,
+): string => {
+  const headline = manifest.reason?.trim() || `Heal patch ${manifest.id}`;
+  const lines = [`fix(issue-dinner): ${headline}`, ""];
+  if (manifest.issueKey) {
+    lines.push(`Discovered while serving ${manifest.issueKey}.`);
+  }
+  lines.push(`Heal patch: ${manifest.id}`);
+  return lines.join("\n");
+};
+
+export const contributionPrTitle = (
+  manifest: Pick<HealPatchManifest, "id" | "reason">,
+): string => {
+  const headline = manifest.reason?.trim() || manifest.id;
+  return `fix(issue-dinner): ${headline}`;
+};
+
+export const contributionPrBody = (
+  manifest: HealPatchManifest,
+  epic?: string,
+): string => {
+  const files = manifest.files.map((file) => `- \`${file.path}\``).join("\n");
+  const lines = [
+    "## Summary",
+    manifest.reason?.trim() || "Self-heal patch applied during an issue-dinner serve run.",
+    "",
+    "## Context",
+    manifest.issueKey ? `- Jira story: **${manifest.issueKey}**` : "- Jira story: (unspecified)",
+    epic ? `- Epic serve: **${epic}**` : undefined,
+    `- Heal patch id: \`${manifest.id}\``,
+    "",
+    "## Files",
+    files || "- (none)",
+    "",
+    "## Verification",
+    "- [x] `npm run typecheck`",
+    "- [x] `npm run build`",
+    "",
+    "_Generated by issue-dinner heal contribute._",
+  ].filter((line): line is string => line !== undefined);
+  return lines.join("\n");
+};
+
+export const defaultContributeBase = (): string =>
+  process.env[CONTRIBUTE_BASE_ENV]?.trim() || "main";
+
+export const defaultContributeRemote = (): string =>
+  process.env[CONTRIBUTE_REMOTE_ENV]?.trim() || "origin";
+
+const liveGitPort: SelfHealGitCommands = {
+  readBranch: (root) =>
+    runCommand("git", ["branch", "--show-current"], { cwd: root }).pipe(
+      Effect.map(({ stdout }) => stdout.trim() || "HEAD"),
+    ),
+  checkout: (root, ref) =>
+    runCommand("git", ["checkout", ref], { cwd: root }).pipe(Effect.asVoid),
+  createBranch: (root, branch) =>
+    runCommand("git", ["checkout", "-b", branch], { cwd: root }).pipe(Effect.asVoid),
+  add: (root, paths) =>
+    runCommand("git", ["add", "--", ...paths], { cwd: root }).pipe(Effect.asVoid),
+  commit: (root, message) =>
+    runCommand("git", ["commit", "-m", message], { cwd: root }).pipe(
+      Effect.flatMap(() =>
+        runCommand("git", ["rev-parse", "HEAD"], { cwd: root }).pipe(
+          Effect.map(({ stdout }) => stdout.trim()),
+        ),
+      ),
+    ),
+  push: (root, remote, branch) =>
+    runCommand("git", ["push", "-u", remote, branch], { cwd: root }).pipe(Effect.asVoid),
+  createPullRequest: (input) =>
+    runCommand(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--base",
+        input.baseBranch,
+        "--head",
+        input.branch,
+        "--title",
+        input.title,
+        "--body",
+        input.body,
+      ],
+      { cwd: input.root },
+    ).pipe(
+      Effect.map(({ stdout }) => stdout.trim().split("\n").at(-1) ?? stdout.trim()),
+    ),
+};
+
+export const SelfHealGitPortLive = Layer.succeed(SelfHealGitPort, liveGitPort);
+
+export const readAppliedManifest = (
+  patchDir: string,
+): Effect.Effect<
+  HealPatchManifest,
+  HealPatchInvalid | import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const manifestPath = join(patchDir, MANIFEST_FILE);
+    if (!(yield* fs.exists(manifestPath))) {
+      return yield* Effect.fail(
+        new HealPatchInvalid({
+          message: `Missing ${MANIFEST_FILE} in ${patchDir}`,
+        }),
+      );
+    }
+    const raw = yield* fs.readFileString(manifestPath);
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (err) =>
+        new HealPatchInvalid({
+          message: `Invalid JSON in ${patchDir}: ${String(err)}`,
+        }),
+    });
+    return yield* Schema.decodeUnknown(HealPatchManifest)(parsed).pipe(
+      Effect.mapError(
+        (err) =>
+          new HealPatchInvalid({
+            message: `Invalid manifest in ${patchDir}: ${String(err)}`,
+          }),
+      ),
+    );
+  });
+
+const hasContributionRecord = (
+  patchDir: string,
+): Effect.Effect<boolean, import("@effect/platform/Error").PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.exists(join(patchDir, CONTRIBUTION_FILE));
+  });
+
+const writeContributionRecord = (
+  patchDir: string,
+  record: HealContributionRecord,
+): Effect.Effect<void, import("@effect/platform/Error").PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      join(patchDir, CONTRIBUTION_FILE),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  });
+
+const writeManifestFiles = (
+  root: string,
+  manifest: HealPatchManifest,
+): Effect.Effect<
+  ReadonlyArray<string>,
+  HealPatchInvalid | import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const paths: string[] = [];
+    for (const file of manifest.files) {
+      const relPath = yield* validatePatchPath(file.path);
+      paths.push(relPath);
+      const absPath = join(root, relPath);
+      yield* fs.makeDirectory(dirname(absPath), { recursive: true });
+      yield* fs.writeFileString(absPath, file.content);
+    }
+    return paths;
+  });
+
+const listAppliedPatchNames = (
+  root: string,
+): Effect.Effect<
+  ReadonlyArray<string>,
+  import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const applied = healAppliedDir(root);
+    if (!(yield* fs.exists(applied))) return [];
+    return (yield* fs.readDirectory(applied)).filter((name) => !name.startsWith("."));
+  });
+
+export const listPendingContributions = (
+  root: string,
+): Effect.Effect<
+  ReadonlyArray<string>,
+  import("@effect/platform/Error").PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const pending: string[] = [];
+    for (const name of yield* listAppliedPatchNames(root)) {
+      const patchDir = join(healAppliedDir(root), name);
+      if (!(yield* hasContributionRecord(patchDir))) {
+        pending.push(name);
+      }
+    }
+    return pending;
+  });
+
+const contributeSinglePatch = (
+  root: string,
+  patchName: string,
+  options: ContributeOptions,
+): Effect.Effect<
+  { ok: true; patchId: string; prUrl: string } | { ok: false; patchId: string; error: string },
+  | import("@effect/platform/Error").PlatformError
+  | HealPatchInvalid
+  | SelfHealContributeFailed,
+  FileSystem.FileSystem | CommandExecutor.CommandExecutor | SelfHealGitPort
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const git = yield* SelfHealGitPort;
+    const patchDir = join(healAppliedDir(root), patchName);
+    const manifest = yield* readAppliedManifest(patchDir);
+    const patchId = manifest.id || patchName;
+
+    if (options.patchId && options.patchId !== patchId && options.patchId !== patchName) {
+      return { ok: false as const, patchId, error: "filtered out" };
+    }
+
+    if (yield* hasContributionRecord(patchDir)) {
+      return { ok: false as const, patchId, error: "already contributed" };
+    }
+
+    const baseBranch = options.baseBranch ?? defaultContributeBase();
+    const remote = options.remote ?? defaultContributeRemote();
+    const branch = contributionBranchName(patchId);
+
+    if (options.dryRun) {
+      const paths = manifest.files.map((file) => file.path);
+      return {
+        ok: true as const,
+        patchId,
+        prUrl: `(dry-run) ${branch} -> ${baseBranch} (${paths.join(", ")})`,
+      };
+    }
+
+    const originalBranch = yield* git.readBranch(root);
+
+    const outcome = yield* Effect.gen(function* () {
+      yield* git.checkout(root, baseBranch);
+      yield* git.createBranch(root, branch);
+      const paths = yield* writeManifestFiles(root, manifest);
+      yield* git.add(root, paths);
+      const commitSha = yield* git.commit(root, contributionCommitMessage(manifest));
+      yield* git.push(root, remote, branch);
+      const prUrl = yield* git.createPullRequest({
+        root,
+        baseBranch,
+        branch,
+        remote,
+        title: contributionPrTitle(manifest),
+        body: contributionPrBody(manifest),
+      });
+
+      yield* writeContributionRecord(
+        patchDir,
+        new HealContributionRecord({
+          patchId,
+          branch,
+          commitSha,
+          prUrl,
+          contributedAt: new Date().toISOString(),
+          baseBranch,
+          remote,
+        }),
+      );
+
+      return { ok: true as const, patchId, prUrl };
+    }).pipe(
+      Effect.ensuring(
+        git.checkout(root, originalBranch).pipe(Effect.catchAll(() => Effect.void)),
+      ),
+      Effect.catchAll((err) =>
+        Effect.succeed({
+          ok: false as const,
+          patchId,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+    );
+
+    return outcome;
+  }).pipe(
+    Effect.catchAll((err) =>
+      Effect.succeed({
+        ok: false as const,
+        patchId: patchName,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    ),
+  );
+
+/** Open PRs for applied heal patches against the issue-dinner source repo. */
+export const contributeAppliedPatches = (
+  options: ContributeOptions = {},
+): Effect.Effect<
+  ContributeResult,
+  | import("@effect/platform/Error").PlatformError
+  | HealPatchInvalid
+  | SelfHealContributeFailed,
+  FileSystem.FileSystem | CommandExecutor.CommandExecutor | SelfHealGitPort
+> =>
+  Effect.gen(function* () {
+    const root = options.root ?? (yield* resolveProjectRoot());
+    const pending = yield* listPendingContributions(root);
+    const contributed: string[] = [];
+    const skipped: string[] = [];
+    const failed: Array<{ patchId: string; error: string }> = [];
+
+    if (pending.length === 0) {
+      out.info("heal: no applied patches waiting for contribution");
+      return { contributed, skipped, failed };
+    }
+
+    out.phase(
+      "heal",
+      `${options.dryRun ? "would contribute" : "contributing"} ${pending.length} patch(es)`,
+    );
+
+    for (const name of [...pending].sort()) {
+      const result = yield* contributeSinglePatch(root, name, options);
+      if (!result.ok) {
+        if (result.error === "already contributed" || result.error === "filtered out") {
+          skipped.push(result.patchId);
+          continue;
+        }
+        failed.push({ patchId: result.patchId, error: result.error });
+        out.error(`heal: contribute ${result.patchId} failed — ${result.error}`);
+        continue;
+      }
+      contributed.push(result.patchId);
+      out.success(`heal: opened PR for ${result.patchId} — ${result.prUrl}`);
+    }
+
+    return { contributed, skipped, failed };
+  });
+
+export const formatContributeReminder = (pending: ReadonlyArray<string>): string | undefined => {
+  if (pending.length === 0) return undefined;
+  return `Heals ready to upstream: issue-dinner heal contribute (${pending.join(", ")})`;
+};

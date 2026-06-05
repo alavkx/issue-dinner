@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { stripWatchArgv, WATCH_FLAG, NO_WATCH_RESTART_ON_CRASH_FLAG } from "./watchdog.js";
+import { SELF_HEAL_FLAG } from "./self-heal-flags.js";
+
+describe("stripWatchArgv", () => {
+  it("removes watch flags and preserves epic argv", () => {
+    const stripped = stripWatchArgv([
+      "CPD-635",
+      "serve",
+      WATCH_FLAG,
+      SELF_HEAL_FLAG,
+      "--skip-preflight",
+    ]);
+    assert.equal(stripped.watch, true);
+    assert.equal(stripped.restartOnCrash, true);
+    assert.deepEqual(stripped.argv, [
+      "CPD-635",
+      "serve",
+      SELF_HEAL_FLAG,
+      "--skip-preflight",
+    ]);
+  });
+
+  it("allows file reload when crash restart is disabled", () => {
+    const stripped = stripWatchArgv([
+      "CPD-635",
+      "serve",
+      WATCH_FLAG,
+      NO_WATCH_RESTART_ON_CRASH_FLAG,
+    ]);
+    assert.equal(stripped.watch, true);
+    assert.equal(stripped.restartOnCrash, false);
+  });
+});

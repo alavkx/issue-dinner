@@ -1,0 +1,27 @@
+# Dependencies & build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Secrets (install config and API keys live outside the repo — see docs/runtime-layout.md)
+.env
+.env.*
+!.env.example
+
+# Machine install config — never commit real paths or verify commands
+config.json
+issue-dinner.config.json
+
+# Runtime state (default: ~/.local/state/issue-dinner/). These dirs only appear
+# inside the issue-dinner repo when dogfooding with ISSUE_DINNER_STATE_DIR set locally.
+.state/
+heals/
+transcripts/
+
+# Self-heal package-local artifacts (contribution queue under the install root)
+.issue-dinner/
+
+# Serve / agent logs if state dir is redirected into the repo
+*.log
+
+.DS_Store

@@ -1,0 +1,69 @@
+{
+  "model": "composer-2.5",
+  "settingSources": ["project"],
+  "requireVerify": true,
+  "serveVerifyGate": "inner",
+  "requireHandoffTests": true,
+  "stackAuthor": "you",
+  "stackBaseOverride": "you/proj-100-trunk",
+  "graphiteTrunk": "main",
+  "blockerPolicy": "strict",
+  "commitWip": true,
+  "recoveryAttempts": 2,
+  "quietRecovery": true,
+  "workspaces": {
+    "backend": "/path/to/backend",
+    "frontend": "/path/to/frontend",
+    "sdk": "/path/to/ts-client",
+    "schemas": "/path/to/api-schemas"
+  },
+  "sdkClientPackage": "@your-org/api-client",
+  "defaultWorkspace": "backend",
+  "issueWorkspace": {
+    "PROJ-102": "frontend"
+  },
+  "issueWorkspaces": {
+    "PROJ-101": ["backend", "schemas", "sdk", "frontend"]
+  },
+  "verifyCommands": {
+    "backend": [
+      {
+        "name": "unit",
+        "tier": "inner",
+        "command": "npm",
+        "args": ["test"]
+      }
+    ],
+    "frontend": [
+      {
+        "name": "unit",
+        "command": "npm",
+        "args": ["run", "test"]
+      }
+    ],
+    "schemas": [
+      {
+        "name": "openapi-validate",
+        "command": "echo",
+        "args": ["configure your schema validate command"]
+      }
+    ]
+  },
+  "issueVerifyCommands": {
+    "PROJ-101": [
+      {
+        "name": "backend-unit",
+        "tier": "inner",
+        "command": "npm",
+        "args": ["test"],
+        "workspace": "backend"
+      },
+      {
+        "name": "frontend-unit",
+        "command": "npm",
+        "args": ["run", "test"],
+        "workspace": "frontend"
+      }
+    ]
+  }
+}
