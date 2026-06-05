@@ -32,7 +32,7 @@ export ISSUE_DINNER_CURSOR_API_KEY="cursor_..."
 | `stackBaseOverride` | Optional if your epic trunk branch is not `{author}/{epic}-trunk` |
 | `sdkClientPackage` | npm package in frontend to link to local `sdk` workspace |
 | `verifyCommands` / `issueVerifyCommands` | Shell verify gates (paths must exist — preflight checks) |
-| `commitWip` | Commit agent WIP on story branches after each course (default `true`) |
+| `commitWip` | Commit agent WIP on story branches after each story (default `true`) |
 | `blockerPolicy` | `strict` (only `verified` unblocks) or `agent_complete` |
 | `quietRecovery` | Recovery agents log to transcript only (default `true`) |
 
@@ -43,7 +43,7 @@ Runtime state (not in git): `~/.local/state/issue-dinner/PROJ-100/runs.json`, se
 Recommended flow:
 
 ```bash
-issue-dinner PROJ-100 cook PROJ-101          # prove one course first
+issue-dinner PROJ-100 run PROJ-101          # prove one story first
 issue-dinner PROJ-100 launch --exclude PROJ-105   # preflight + prep + tmux serve
 ```
 
@@ -55,17 +55,17 @@ issue-dinner PROJ-100 list
 issue-dinner PROJ-100 status --verbose
 issue-dinner PROJ-100 prep --dry-run
 issue-dinner PROJ-100 serve --exclude PROJ-105
-issue-dinner PROJ-100 cook PROJ-101 --force
+issue-dinner PROJ-100 run PROJ-101 --force
 issue-dinner verify PROJ-101
 ```
 
-`launch` and `serve` run **preflight** first (API key, acli, cursor CLI, inner verify paths). Dirty trees are auto-committed when possible, otherwise warned (not blocked). Verified and in-progress courses skip path checks. Use `--skip-preflight` only when you know the runway is good.
+`launch` and `serve` run **preflight** first (API key, acli, cursor CLI, inner verify paths). Dirty trees are auto-committed when possible, otherwise warned (not blocked). Verified and in-progress stories skip path checks. Use `--skip-preflight` only when you know the runway is good.
 
-`serve` skips **verified** courses by default (`--no-skip-done` to re-run them).
+`serve` skips **verified** stories by default (`--no-skip-done` to re-run them).
 
-**Menu order:** each course requires prior courses in the epic menu to be **verified** (not merely `agent_complete`). `--continue-on-error` does not skip this — it only avoids stopping the loop on the first verify failure; dirty repos always halt the menu.
+**Story order:** each story requires prior stories in the epic to be **verified** (not merely `agent_complete`). `--continue-on-error` does not skip this — it only avoids stopping the loop on the first verify failure; dirty repos always halt the run.
 
-On failure, dinner prints a **DINNER HALTED** block after the summary with the blocking course and reason.
+On failure, issue-dinner prints a **RUN HALTED** block after the summary with the blocking story and reason.
 
 Use `--detach` on launch to background tmux. Default attaches you to the session; when serve finishes the shell stays open.
 
@@ -77,11 +77,11 @@ For `PROJ-100` with `stackAuthor: you`:
 - Trunk: `you/proj-100-trunk` (or `stackBaseOverride`)
 - Stories: `you/proj-100/proj-101`, …
 
-`prep` / `launch` create branches in **your project workspaces**; each course checks out its story branch, runs a **local** agent, commits WIP, then runs verify.
+`prep` / `launch` create branches in **your project workspaces**; each story checks out its branch, runs a **local** agent, commits WIP, then runs verify.
 
 ## Done criteria
 
-A course is **verified** only when handoff is `success`/`partial` **and** verify commands exit 0. Agent-only success is **`agent_complete`** (verify failed).
+A story is **verified** only when handoff is `success`/`partial` **and** verify commands exit 0. Agent-only success is **`agent_complete`** (verify failed).
 
 ## Tests
 

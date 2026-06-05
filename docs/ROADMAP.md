@@ -6,7 +6,7 @@
 
 - `issue-dinner <epic> prep` — create/sync story branches (stack derived from epic + `stackAuthor`)
 - `issue-dinner <epic> launch` — preflight → prep → tmux serve (attached by default)
-- Each `cook` / `serve` course checks out `{prefix}/{issue-key}` in participating workspaces before the agent runs
+- Each `run` / `serve` story checks out `{prefix}/{issue-key}` in participating workspaces before the agent runs
 - Branches are stacked with `gt branch create`; auto-tracks existing `stackBaseOverride` bases
 - WIP committed on story branches after each successful agent phase (`commitWip`, default on)
 

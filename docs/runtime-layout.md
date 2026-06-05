@@ -34,7 +34,7 @@ Per epic (`PROJ-100`):
 
 | Path | Purpose |
 | ---- | ------- |
-| `{state}/PROJ-100/runs.json` | Course status, handoffs, verify results |
+| `{state}/PROJ-100/runs.json` | Story status, handoffs, verify results |
 | `{state}/PROJ-100/serve-latest.log` | Serve loop log |
 | `{state}/PROJ-100/transcripts/{ISSUE}.log` | Per-story agent transcripts |
 | `{state}/PROJ-100/session-history.log` | tmux attach replay |
@@ -58,7 +58,7 @@ Self-heal patches **issue-dinner**, not your project workspaces.
 
 Flow:
 
-1. Course or heal agent edits `src/` under `toolRoot`
+1. Story or heal agent edits `src/` under `toolRoot`
 2. Validated edits persist to `{state}/heals/`
 3. On next serve start, durable heals sync into `toolRoot/src/` and rebuild
 4. End-of-serve review may queue contribution under `.issue-dinner/heals/applied/`
